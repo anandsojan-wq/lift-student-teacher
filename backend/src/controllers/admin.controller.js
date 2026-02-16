@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { StudentProfile } from '../models/StudentProfile.js';
 import { Subject } from '../models/Subject.js';
 import { User } from '../models/User.js';
 import { badRequest, created, ok } from '../utils/http.js';
@@ -56,13 +57,65 @@ export async function listTeachers(req, res) {
 }
 
 export async function listStudents(req, res) {
-  const students = await User.find({
+  const q = String(req.query.q || '').trim();
+  const subjectId = String(req.query.subjectId || '').trim();
+
+  const allInstitutionStudents = await User.find({
     institutionId: req.auth.institutionId,
     role: 'student'
   })
-    .select('-passwordHash')
+    .select('_id')
     .lean();
-  return ok(res, { students });
+  const institutionStudentIds = allInstitutionStudents.map((item) => item._id);
+
+  const profiles = await StudentProfile.find({
+    userId: { $in: institutionStudentIds }
+  }).lean();
+  const subjectFilteredProfiles = subjectId
+    ? profiles.filter((profile) =>
+        (profile.subjects || []).some((id) => id.toString() === subjectId)
+      )
+    : profiles;
+
+  const userIds = subjectFilteredProfiles.map((profile) => profile.userId);
+
+  const query = {
+    institutionId: req.auth.institutionId,
+    role: 'student',
+    _id: { $in: userIds.length ? userIds : institutionStudentIds }
+  };
+  if (q) query.fullName = { $regex: q, $options: 'i' };
+
+  const students = await User.find(query).select('-passwordHash').lean();
+
+  const subjectIds = Array.from(
+    new Set(
+      subjectFilteredProfiles.flatMap((profile) =>
+        (profile.subjects || []).map((id) => id.toString())
+      )
+    )
+  );
+  const subjects = await Subject.find({ _id: { $in: subjectIds } })
+    .select('name')
+    .lean();
+  const subjectMap = new Map(subjects.map((subject) => [subject._id.toString(), subject.name]));
+
+  const profileMap = new Map(
+    subjectFilteredProfiles.map((profile) => [
+      profile.userId.toString(),
+      (profile.subjects || []).map((id) => ({
+        id: id.toString(),
+        name: subjectMap.get(id.toString()) || ''
+      }))
+    ])
+  );
+
+  return ok(res, {
+    students: students.map((student) => ({
+      ...student,
+      subjects: profileMap.get(student._id.toString()) || []
+    }))
+  });
 }
 
 export async function dashboardSummary(req, res) {
@@ -79,4 +132,15 @@ export async function dashboardSummary(req, res) {
       subjectCount
     }
   });
+}
+
+export async function listSubjects(req, res) {
+  const subjects = await Subject.find({
+    institutionId: req.auth.institutionId
+  })
+    .select('name teacherId createdAt')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  return ok(res, { subjects });
 }

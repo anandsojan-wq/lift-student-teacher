@@ -142,7 +142,31 @@ export async function listMyStudents(req, res) {
     .sort({ fullName: 1 })
     .lean();
 
-  return ok(res, { students });
+  const allSubjectIds = Array.from(
+    new Set(
+      profiles.flatMap((profile) => (profile.subjects || []).map((id) => id.toString()))
+    )
+  );
+  const subjects = await Subject.find({ _id: { $in: allSubjectIds } })
+    .select('name')
+    .lean();
+  const subjectMap = new Map(subjects.map((subject) => [subject._id.toString(), subject.name]));
+  const profileMap = new Map(
+    profiles.map((profile) => [
+      profile.userId.toString(),
+      (profile.subjects || []).map((id) => ({
+        id: id.toString(),
+        name: subjectMap.get(id.toString()) || ''
+      }))
+    ])
+  );
+
+  return ok(res, {
+    students: students.map((student) => ({
+      ...student,
+      subjects: profileMap.get(student._id.toString()) || []
+    }))
+  });
 }
 
 export async function deleteSubject(req, res) {
