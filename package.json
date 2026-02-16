@@ -1,0 +1,15 @@
+{
+  "name": "student-teacher-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "White-label edtech starter dashboard",
+  "scripts": {
+    "start": "node server.js",
+    "backend:install": "cd backend && npm install",
+    "backend:dev": "cd backend && npm run dev",
+    "portal": "bash ./scripts/run-portal.sh"
+  },
+  "dependencies": {
+    "serverless-http": "^3.2.0"
+  }
+}

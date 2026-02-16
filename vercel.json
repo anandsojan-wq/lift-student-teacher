@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "installCommand": "npm install && npm install --prefix backend",
+  "routes": [
+    { "src": "/api", "dest": "/api/index.js" },
+    { "src": "/api/(.*)", "dest": "/api/index.js" },
+    { "src": "/owner", "dest": "/public/owner.html" },
+    { "src": "/owner.html", "dest": "/public/owner.html" },
+    { "src": "/", "dest": "/public/index.html" },
+    { "src": "/(.*)", "dest": "/public/$1" }
+  ]
+}

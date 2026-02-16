@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LIFT Owner Panel</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/owner.css" />
+  </head>
+  <body>
+    <main class="owner-shell">
+      <section class="owner-card">
+        <h1>Owner Login</h1>
+        <p>Private panel for creating institutions.</p>
+        <form id="ownerLoginForm" class="owner-form">
+          <label for="ownerInstitutionId">Institution ID</label>
+          <input id="ownerInstitutionId" required />
+
+          <label for="ownerUsername">Username</label>
+          <input id="ownerUsername" required />
+
+          <label for="ownerPassword">Password</label>
+          <input id="ownerPassword" type="password" required />
+
+          <button class="cta-main" type="submit">Sign In</button>
+        </form>
+        <p id="ownerLoginStatus" class="auth-note"></p>
+      </section>
+
+      <section class="owner-card hidden" id="ownerPanel">
+        <h2>Create Institution</h2>
+        <form id="createInstitutionForm" class="owner-form">
+          <label for="institutionName">Institution Name</label>
+          <input id="institutionName" required />
+
+          <label for="cityCode">City Code (2-6 letters)</label>
+          <input id="cityCode" placeholder="KOC" />
+
+          <label for="planType">Plan</label>
+          <select id="planType">
+            <option value="trial">Trial</option>
+            <option value="paid">Paid</option>
+          </select>
+
+          <label for="trialTeacherLimit">Teacher Limit</label>
+          <input id="trialTeacherLimit" type="number" min="1" value="5" />
+
+          <label for="trialSubjectLimitPerTeacher">Subjects Per Teacher Limit</label>
+          <input id="trialSubjectLimitPerTeacher" type="number" min="1" value="5" />
+
+          <label for="studentLimit">Student Limit</label>
+          <input id="studentLimit" type="number" min="1" value="200" />
+
+          <label for="adminName">Admin Full Name</label>
+          <input id="adminName" value="Institution Admin" />
+
+          <label for="adminEmail">Admin Email</label>
+          <input id="adminEmail" type="email" />
+
+          <button class="cta-main" type="submit">Generate Institution + Admin</button>
+        </form>
+        <p id="ownerCreateStatus" class="auth-note"></p>
+        <pre id="ownerCredentialBox" class="credential-preview"></pre>
+      </section>
+
+      <section class="owner-card hidden" id="ownerInstitutionListCard">
+        <h2>Institutions</h2>
+        <button class="cta-soft" id="refreshInstitutionsBtn">Refresh</button>
+        <div id="ownerInstitutionList" class="owner-list"></div>
+      </section>
+    </main>
+
+    <script src="/owner.js"></script>
+  </body>
+</html>

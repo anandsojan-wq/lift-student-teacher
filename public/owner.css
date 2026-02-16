@@ -1,0 +1,60 @@
+.owner-shell {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 24px 14px 36px;
+  display: grid;
+  gap: 14px;
+}
+
+.owner-card {
+  background: #ffffff;
+  border: 1px solid #d5e7f7;
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 10px 24px rgba(26, 106, 178, 0.09);
+}
+
+.owner-card h1,
+.owner-card h2 {
+  margin: 0;
+  color: #114776;
+  font-family: 'Sora', 'Manrope', sans-serif;
+}
+
+.owner-card p {
+  margin-top: 6px;
+}
+
+.owner-form {
+  margin-top: 10px;
+}
+
+.owner-list {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.owner-item {
+  border: 1px solid #dceaf7;
+  border-radius: 12px;
+  padding: 10px;
+  background: #f7fbff;
+}
+
+.owner-item p {
+  margin: 4px 0 0;
+  color: #4d6d8a;
+  font-size: 0.9rem;
+}
+
+.credential-preview {
+  margin-top: 10px;
+  border: 1px solid #dceaf7;
+  border-radius: 12px;
+  padding: 10px;
+  background: #f8fbff;
+  color: #10497d;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

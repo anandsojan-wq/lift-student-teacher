@@ -1,0 +1,55 @@
+.live-welcome .hero-content {
+  width: min(980px, calc(100% - 32px));
+}
+
+.live-welcome .hero-actions {
+  width: min(760px, 100%);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.hero-btn.admin {
+  color: #ffffff;
+  background: linear-gradient(120deg, #0f67b8 0%, #0f4f8e 100%);
+}
+
+.live-auth-card {
+  max-width: 560px;
+}
+
+.two-grid-form {
+  margin-top: 6px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.two-grid-form > div {
+  min-width: 0;
+}
+
+.account-form {
+  margin-top: 8px;
+}
+
+.credential-preview {
+  margin-top: 10px;
+  border: 1px solid #dceaf7;
+  border-radius: 12px;
+  padding: 10px;
+  background: #f8fbff;
+  color: #10497d;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 880px) {
+  .two-grid-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .live-welcome .hero-actions {
+    grid-template-columns: 1fr;
+  }
+}
