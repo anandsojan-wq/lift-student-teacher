@@ -1,10 +1,8 @@
-const serverless = require('serverless-http');
-
-let cachedHandler = null;
+let cachedApp = null;
 let appReadyPromise = null;
 
-async function buildHandler() {
-  if (cachedHandler) return cachedHandler;
+async function buildRuntimeApp() {
+  if (cachedApp) return cachedApp;
   if (appReadyPromise) return appReadyPromise;
 
   appReadyPromise = (async () => {
@@ -14,8 +12,8 @@ async function buildHandler() {
     ]);
 
     await connectDb();
-    cachedHandler = serverless(buildApp());
-    return cachedHandler;
+    cachedApp = buildApp();
+    return cachedApp;
   })().catch((error) => {
     appReadyPromise = null;
     throw error;
@@ -26,8 +24,21 @@ async function buildHandler() {
 
 module.exports = async (req, res) => {
   try {
-    const handler = await buildHandler();
-    return handler(req, res);
+    try {
+      const parsed = new URL(req.url || '/', 'http://localhost');
+      const routedPath = parsed.searchParams.get('path');
+      if (routedPath) {
+        parsed.searchParams.delete('path');
+        const normalized = routedPath.startsWith('/') ? routedPath : `/${routedPath}`;
+        const query = parsed.searchParams.toString();
+        req.url = `/api${normalized}${query ? `?${query}` : ''}`;
+      }
+    } catch (error) {
+      // keep original req.url
+    }
+
+    const app = await buildRuntimeApp();
+    return app(req, res);
   } catch (error) {
     return res.status(500).json({
       success: false,

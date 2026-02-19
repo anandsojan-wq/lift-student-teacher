@@ -25,25 +25,22 @@ export async function markNotificationsRead(req, res) {
   const { notificationId } = parsed.data;
 
   if (notificationId) {
-    await Notification.updateOne(
+    await Notification.deleteOne(
       {
         _id: notificationId,
         institutionId: req.auth.institutionId,
         recipientUserId: req.auth.userId
-      },
-      { $set: { read: true } }
+      }
     );
-    return ok(res, {}, 'Notification marked as read.');
+    return ok(res, {}, 'Notification removed.');
   }
 
-  await Notification.updateMany(
+  await Notification.deleteMany(
     {
       institutionId: req.auth.institutionId,
-      recipientUserId: req.auth.userId,
-      read: false
-    },
-    { $set: { read: true } }
+      recipientUserId: req.auth.userId
+    }
   );
 
-  return ok(res, {}, 'All notifications marked as read.');
+  return ok(res, {}, 'All notifications removed.');
 }

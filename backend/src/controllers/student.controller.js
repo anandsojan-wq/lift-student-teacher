@@ -19,7 +19,13 @@ export async function dashboard(req, res) {
         name: subject.name
       })),
       usageSeconds: profile?.usageSeconds || 0,
-      attemptCount
+      attemptCount,
+      xp: profile?.xp || 0,
+      level: profile?.level || 1,
+      streakDays: profile?.streakDays || 0,
+      longestStreak: profile?.longestStreak || 0,
+      badges: profile?.badges || [],
+      focusModeEnabled: Boolean(profile?.focusModeEnabled)
     }
   });
 }

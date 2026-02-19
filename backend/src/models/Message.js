@@ -9,7 +9,9 @@ const messageSchema = new mongoose.Schema(
     },
     fromUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     toUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    text: { type: String, required: true, trim: true }
+    messageType: { type: String, enum: ['text', 'voice'], default: 'text' },
+    text: { type: String, required: true, trim: true },
+    mediaUrl: { type: String, default: '' }
   },
   { timestamps: true }
 );

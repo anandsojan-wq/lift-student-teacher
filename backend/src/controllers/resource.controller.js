@@ -3,17 +3,66 @@ import { Resource } from '../models/Resource.js';
 import { StudentProfile } from '../models/StudentProfile.js';
 import { Subject } from '../models/Subject.js';
 import { User } from '../models/User.js';
+import { trackAnalyticsEvent } from '../services/analytics.service.js';
 import { badRequest, created, notFound, ok } from '../utils/http.js';
 import { notifyUsers } from '../utils/notify.js';
 import { escapeRegExp, toKeywordArray } from '../utils/text.js';
 
+function isHttpUrl(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch (error) {
+    return false;
+  }
+}
+
+function isDataUrl(value) {
+  return /^data:[a-z0-9/+.-]+;base64,[a-z0-9+/=\s]+$/i.test(String(value || ''));
+}
+
 const teacherCreateResourceSchema = z.object({
   subjectId: z.string().min(1),
   resourceType: z.enum(['pdf', 'ebook', 'video', 'link']),
-  title: z.string().min(1).max(200),
-  value: z.string().min(1),
+  title: z.string().trim().min(1, 'Resource title is required.').max(200),
+  value: z.string().trim().min(1, 'Resource file or URL is required.').max(4_500_000),
   source: z.enum(['file', 'text']).default('text'),
   keywords: z.union([z.array(z.string()), z.string()]).optional()
+}).superRefine((payload, ctx) => {
+  const isFile = payload.source === 'file';
+  const isDocType = payload.resourceType === 'pdf' || payload.resourceType === 'ebook';
+
+  if (isFile && !isDataUrl(payload.value) && !isHttpUrl(payload.value)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['value'],
+      message: 'Uploaded resource is invalid. Please re-upload the file.'
+    });
+  }
+
+  if (!isFile && !isHttpUrl(payload.value)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['value'],
+      message: 'Please enter a valid URL.'
+    });
+  }
+
+  if (isDocType && !isFile && !isHttpUrl(payload.value)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['value'],
+      message: 'PDF/EBook must be uploaded as file or shared as a valid URL.'
+    });
+  }
+
+  if ((payload.resourceType === 'video' || payload.resourceType === 'link') && isFile) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['source'],
+      message: 'Video and link resources must use URL input.'
+    });
+  }
 });
 
 function buildSearchQuery(q) {
@@ -27,7 +76,9 @@ function buildSearchQuery(q) {
 
 export async function teacherCreateResource(req, res) {
   const parsed = teacherCreateResourceSchema.safeParse(req.body);
-  if (!parsed.success) return badRequest(res, 'Invalid resource payload.');
+  if (!parsed.success) {
+    return badRequest(res, parsed.error.issues[0]?.message || 'Invalid resource payload.');
+  }
 
   const payload = parsed.data;
   const subject = await Subject.findOne({
@@ -60,6 +111,19 @@ export async function teacherCreateResource(req, res) {
     recipientUserIds: profiles.map((profile) => profile.userId),
     type: 'resource',
     message: `New ${payload.resourceType.toUpperCase()} resource added for ${subject.name}: ${payload.title}`
+  });
+
+  await trackAnalyticsEvent({
+    institutionId: req.auth.institutionId,
+    userId: req.auth.userId,
+    role: 'teacher',
+    eventType: 'resource_uploaded',
+    stage: 'engagement',
+    metadata: {
+      resourceId: resource._id.toString(),
+      resourceType: payload.resourceType,
+      subjectId: payload.subjectId
+    }
   });
 
   return created(res, { resource }, 'Resource uploaded.');
@@ -117,6 +181,9 @@ export async function studentListResources(req, res) {
     institutionId: req.auth.institutionId,
     subjectId: { $in: subjectIds }
   };
+  if (profile.teacherId) {
+    query.teacherId = profile.teacherId;
+  }
 
   const resourceType = String(req.query.resourceType || '').trim();
   if (resourceType) query.resourceType = resourceType;

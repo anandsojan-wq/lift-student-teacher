@@ -18,13 +18,13 @@ npm run seed:super-admin
 
 - `POST /api/auth/login`
 - `GET /api/auth/me`
-- `POST /api/auth/set-password-first-time`
 - `POST /api/auth/change-password`
 
 ## Super Admin
 
 - `GET /api/super-admin/institutions`
 - `POST /api/super-admin/institutions`
+- `DELETE /api/super-admin/institutions/purge-cancelled`
 
 ## Admin
 

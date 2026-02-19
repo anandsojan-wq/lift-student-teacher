@@ -1,0 +1,220 @@
+{
+  "name": "LIFT Onboarding Notifications",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lift-onboarding",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "Webhook_1",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        280,
+        300
+      ],
+      "webhookId": "lift-onboarding"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body || $json;\nconst headers = $json.headers || {};\nconst eventType = String(body.eventType || '').trim();\nconst payload = body.payload || {};\n\nconst expectedSecret = String($env.LIFT_AUTOMATION_SECRET || '').trim();\nconst incomingSecret = String(headers['x-lift-automation-secret'] || headers['X-Lift-Automation-Secret'] || '').trim();\nif (expectedSecret && incomingSecret && expectedSecret !== incomingSecret) {\n  return [{\n    json: {\n      eventType: 'invalid_secret',\n      email: '',\n      whatsappTo: '',\n      emailSubject: '',\n      emailText: '',\n      whatsAppText: ''\n    }\n  }];\n}\n\nlet email = '';\nlet whatsappTo = '';\nlet emailSubject = '';\nlet emailText = '';\nlet whatsAppText = '';\n\nif (eventType === 'onboarding.new_institution') {\n  const institution = payload.institution || {};\n  const admin = payload.admin || {};\n  email = String(admin.email || '').trim();\n  whatsappTo = String(admin.phone || '').trim();\n  emailSubject = `Welcome to LIFT - ${institution.name || 'Institution'}`;\n  emailText = `Hi ${admin.fullName || 'Admin'},\\n\\nYour institution is now ready on LIFT.\\nInstitution ID: ${institution.institutionId || ''}\\nUsername: ${admin.username || ''}\\nTemporary Password: ${admin.temporaryPassword || ''}\\n\\nPlease log in and change password immediately.`;\n  whatsAppText = `Welcome to LIFT. Institution ID: ${institution.institutionId || ''}, Username: ${admin.username || ''}, Temp Password: ${admin.temporaryPassword || ''}`;\n}\n\nif (eventType === 'onboarding.new_teacher') {\n  const teacher = payload.teacher || {};\n  email = String(teacher.email || '').trim();\n  whatsappTo = String(teacher.phone || '').trim();\n  emailSubject = `Your LIFT Teacher Account`;\n  emailText = `Hi ${teacher.fullName || 'Teacher'},\\n\\nYour teacher account is created.\\nUsername: ${teacher.username || ''}\\nTemporary Password: ${teacher.temporaryPassword || ''}\\n\\nPlease sign in and change your password.`;\n  whatsAppText = `LIFT Teacher account created. Username: ${teacher.username || ''}, Temp Password: ${teacher.temporaryPassword || ''}`;\n}\n\nif (eventType === 'onboarding.new_student') {\n  const student = payload.student || {};\n  email = String(student.email || '').trim();\n  whatsappTo = String(student.phone || '').trim();\n  emailSubject = `Your LIFT Student Account`;\n  emailText = `Hi ${student.fullName || 'Student'},\\n\\nYour student account is ready.\\nUsername: ${student.username || ''}\\nTemporary Password: ${student.temporaryPassword || ''}\\n\\nUse first-time password setup after login.`;\n  whatsAppText = `LIFT Student account ready. Username: ${student.username || ''}, Temp Password: ${student.temporaryPassword || ''}`;\n}\n\nreturn [{\n  json: {\n    eventType,\n    email,\n    whatsappTo,\n    emailSubject,\n    emailText,\n    whatsAppText\n  }\n}];"
+      },
+      "id": "Code_1",
+      "name": "Prepare Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": false,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-email",
+              "leftValue": "={{$json.email}}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "If_1",
+      "name": "Has Email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        800,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$env.SMTP_FROM_EMAIL}}",
+        "toEmail": "={{$json.email}}",
+        "subject": "={{$json.emailSubject}}",
+        "text": "={{$json.emailText}}",
+        "options": {}
+      },
+      "id": "Email_1",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1040,
+        220
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "replace-with-your-smtp-credential-id",
+          "name": "SMTP Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": false,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-phone",
+              "leftValue": "={{$json.whatsappTo}}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "If_2",
+      "name": "Has WhatsApp Number?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        800,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.WHATSAPP_API_URL}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{$env.WHATSAPP_AUTH_HEADER}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { to: $json.whatsappTo, message: $json.whatsAppText, eventType: $json.eventType } }}",
+        "options": {}
+      },
+      "id": "Http_1",
+      "name": "Send WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1040,
+        380
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Prepare Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Payload": {
+      "main": [
+        [
+          {
+            "node": "Has Email?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Has WhatsApp Number?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Email?": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Has WhatsApp Number?": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "lift-onboarding-template"
+  },
+  "id": "LIFT_Onboarding_Template",
+  "tags": []
+}

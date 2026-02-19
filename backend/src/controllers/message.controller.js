@@ -2,13 +2,33 @@ import { z } from 'zod';
 import { Message } from '../models/Message.js';
 import { StudentProfile } from '../models/StudentProfile.js';
 import { User } from '../models/User.js';
+import { trackAnalyticsEvent } from '../services/analytics.service.js';
 import { badRequest, created, notFound, ok } from '../utils/http.js';
 import { notifyUsers } from '../utils/notify.js';
 
-const sendMessageSchema = z.object({
-  toUserId: z.string().min(1),
-  text: z.string().min(1).max(5000)
-});
+const sendMessageSchema = z
+  .object({
+    toUserId: z.string().min(1),
+    messageType: z.enum(['text', 'voice']).default('text'),
+    text: z.string().max(5000).optional(),
+    mediaUrl: z.string().trim().optional().or(z.literal(''))
+  })
+  .superRefine((payload, ctx) => {
+    if (payload.messageType === 'text' && !String(payload.text || '').trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['text'],
+        message: 'Text is required for normal messages.'
+      });
+    }
+    if (payload.messageType === 'voice' && !String(payload.mediaUrl || '').trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['mediaUrl'],
+        message: 'Voice note URL is required.'
+      });
+    }
+  });
 
 function mapConversationMessages(messages, userMap) {
   return messages.map((message) => {
@@ -81,14 +101,33 @@ export async function teacherSendMessage(req, res) {
     institutionId: req.auth.institutionId,
     fromUserId: req.auth.userId,
     toUserId: target._id,
-    text: payload.text.trim()
+    messageType: payload.messageType,
+    text:
+      payload.messageType === 'voice'
+        ? String(payload.text || 'Voice note').trim()
+        : String(payload.text || '').trim(),
+    mediaUrl: String(payload.mediaUrl || '').trim()
   });
 
   await notifyUsers({
     institutionId: req.auth.institutionId,
     recipientUserIds: [target._id],
     type: 'message',
-    message: 'New message from your teacher.'
+    message:
+      payload.messageType === 'voice'
+        ? 'New voice note from your teacher.'
+        : 'New message from your teacher.'
+  });
+
+  await trackAnalyticsEvent({
+    institutionId: req.auth.institutionId,
+    userId: req.auth.userId,
+    role: 'teacher',
+    eventType: 'message_sent',
+    stage: 'engagement',
+    metadata: {
+      toRole: 'student'
+    }
   });
 
   return created(res, { message }, 'Message sent.');
@@ -120,14 +159,33 @@ export async function studentSendMessage(req, res) {
     institutionId: req.auth.institutionId,
     fromUserId: req.auth.userId,
     toUserId: target._id,
-    text: payload.text.trim()
+    messageType: payload.messageType,
+    text:
+      payload.messageType === 'voice'
+        ? String(payload.text || 'Voice note').trim()
+        : String(payload.text || '').trim(),
+    mediaUrl: String(payload.mediaUrl || '').trim()
   });
 
   await notifyUsers({
     institutionId: req.auth.institutionId,
     recipientUserIds: [target._id],
     type: 'message',
-    message: 'New message from a student.'
+    message:
+      payload.messageType === 'voice'
+        ? 'New voice note from a student.'
+        : 'New message from a student.'
+  });
+
+  await trackAnalyticsEvent({
+    institutionId: req.auth.institutionId,
+    userId: req.auth.userId,
+    role: 'student',
+    eventType: 'message_sent',
+    stage: 'engagement',
+    metadata: {
+      toRole: target.role
+    }
   });
 
   return created(res, { message }, 'Message sent.');
@@ -150,14 +208,33 @@ export async function adminSendMessage(req, res) {
     institutionId: req.auth.institutionId,
     fromUserId: req.auth.userId,
     toUserId: target._id,
-    text: payload.text.trim()
+    messageType: payload.messageType,
+    text:
+      payload.messageType === 'voice'
+        ? String(payload.text || 'Voice note').trim()
+        : String(payload.text || '').trim(),
+    mediaUrl: String(payload.mediaUrl || '').trim()
   });
 
   await notifyUsers({
     institutionId: req.auth.institutionId,
     recipientUserIds: [target._id],
     type: 'message',
-    message: 'New message from admin.'
+    message:
+      payload.messageType === 'voice'
+        ? 'New voice note from admin.'
+        : 'New message from admin.'
+  });
+
+  await trackAnalyticsEvent({
+    institutionId: req.auth.institutionId,
+    userId: req.auth.userId,
+    role: 'admin',
+    eventType: 'message_sent',
+    stage: 'engagement',
+    metadata: {
+      toRole: target.role
+    }
   });
 
   return created(res, { message }, 'Message sent.');
@@ -242,14 +319,53 @@ export async function studentTeacherList(req, res) {
 }
 
 export async function adminUserList(req, res) {
-  const users = await User.find({
+  const role = String(req.query.role || 'all').trim().toLowerCase();
+  const subjectId = String(req.query.subjectId || '').trim();
+  const q = String(req.query.q || '').trim();
+
+  const roles = role === 'teacher'
+    ? ['teacher']
+    : role === 'student'
+      ? ['student']
+      : ['teacher', 'student'];
+
+  let studentIds = null;
+  if (subjectId) {
+    const profileQuery = {};
+    if (!roles.includes('teacher')) {
+      profileQuery.subjects = subjectId;
+    } else {
+      profileQuery.subjects = subjectId;
+    }
+    const profiles = await StudentProfile.find(profileQuery)
+      .select('userId')
+      .lean();
+    studentIds = profiles.map((item) => item.userId.toString());
+  }
+
+  const query = {
     institutionId: req.auth.institutionId,
-    role: { $in: ['teacher', 'student'] },
+    role: { $in: roles },
     isActive: true
-  })
+  };
+  if (q) query.fullName = { $regex: q, $options: 'i' };
+
+  if (subjectId && role === 'student') {
+    query._id = { $in: studentIds || [] };
+  }
+
+  const users = await User.find(query)
     .select('fullName username role')
     .sort({ role: 1, fullName: 1 })
     .lean();
+
+  if (subjectId && role === 'all') {
+    const filtered = users.filter((item) => {
+      if (item.role === 'teacher') return true;
+      return (studentIds || []).includes(item._id.toString());
+    });
+    return ok(res, { users: filtered });
+  }
 
   return ok(res, { users });
 }

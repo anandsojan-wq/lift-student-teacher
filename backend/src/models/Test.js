@@ -19,8 +19,10 @@ const testSchema = new mongoose.Schema(
     teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject', required: true },
     title: { type: String, required: true },
-    type: { type: String, enum: ['mcq', 'long'], required: true },
+    type: { type: String, enum: ['mcq', 'long', 'true_false', 'short'], required: true },
     durationMinutes: { type: Number, required: true },
+    audienceMode: { type: String, enum: ['all', 'selected'], default: 'all' },
+    assignedStudentIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     sourcePdfName: { type: String, default: '' },
     questions: [questionSchema]
   },

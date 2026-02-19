@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { env } from '../config/env.js';
 import { Institution } from '../models/Institution.js';
 import { User } from '../models/User.js';
+import { trackAnalyticsEvent } from '../services/analytics.service.js';
 import { badRequest, created, notFound, ok, unauthorized } from '../utils/http.js';
 
 const bootstrapSchema = z.object({
@@ -18,13 +19,6 @@ const loginSchema = z.object({
   institutionId: z.string().min(1),
   username: z.string().min(1),
   password: z.string().min(1)
-});
-
-const setPasswordFirstTimeSchema = z.object({
-  institutionId: z.string().min(1),
-  username: z.string().min(1),
-  temporaryPassword: z.string().min(1),
-  newPassword: z.string().min(6)
 });
 
 const changePasswordSchema = z.object({
@@ -77,6 +71,17 @@ export async function bootstrap(req, res) {
     email: adminEmail || ''
   });
 
+  await trackAnalyticsEvent({
+    institutionId: institution._id,
+    userId: admin._id,
+    role: 'admin',
+    eventType: 'admin_account_created',
+    stage: 'onboarding',
+    metadata: {
+      source: 'bootstrap'
+    }
+  });
+
   return created(
     res,
     {
@@ -114,6 +119,18 @@ export async function login(req, res) {
   if (!valid) return unauthorized(res, 'Invalid credentials.');
 
   const token = signAccessToken(user);
+
+  await trackAnalyticsEvent({
+    institutionId: user.institutionId,
+    userId: user._id,
+    role: user.role,
+    eventType: 'login_success',
+    stage: 'engagement',
+    metadata: {
+      institutionCode: institutionId
+    }
+  });
+
   return ok(res, {
     token,
     user: {
@@ -151,37 +168,6 @@ export async function me(req, res) {
   });
 }
 
-export async function setPasswordFirstTime(req, res) {
-  const parsed = setPasswordFirstTimeSchema.safeParse(req.body);
-  if (!parsed.success) return badRequest(res, 'Invalid password setup payload.');
-
-  const { institutionId, username, temporaryPassword, newPassword } = parsed.data;
-  const institution = await Institution.findOne({ institutionId, isActive: true }).lean();
-  if (!institution) return notFound(res, 'Institution not found.');
-
-  const user = await User.findOne({
-    institutionId: institution._id,
-    username: username.toLowerCase(),
-    isActive: true
-  });
-  if (!user) return unauthorized(res, 'Invalid credentials.');
-  if (user.role !== 'student') {
-    return unauthorized(res, 'Only student accounts can use first-time setup.');
-  }
-  if (!user.mustChangePassword) {
-    return badRequest(res, 'Password already set. Use normal login.');
-  }
-
-  const valid = await user.verifyPassword(temporaryPassword);
-  if (!valid) return unauthorized(res, 'Invalid temporary password.');
-
-  user.passwordHash = await User.hashPassword(newPassword);
-  user.mustChangePassword = false;
-  await user.save();
-
-  return ok(res, {}, 'Password set successfully. Please login now.');
-}
-
 export async function changePassword(req, res) {
   const parsed = changePasswordSchema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid password change payload.');
@@ -196,6 +182,14 @@ export async function changePassword(req, res) {
   user.passwordHash = await User.hashPassword(newPassword);
   user.mustChangePassword = false;
   await user.save();
+
+  await trackAnalyticsEvent({
+    institutionId: user.institutionId,
+    userId: user._id,
+    role: user.role,
+    eventType: 'password_changed',
+    stage: 'security'
+  });
 
   return ok(res, {}, 'Password updated successfully.');
 }

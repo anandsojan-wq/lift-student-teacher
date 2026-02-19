@@ -5,6 +5,7 @@ import { authRouter } from './auth.routes.js';
 import { studentRouter } from './student.routes.js';
 import { superAdminRouter } from './super-admin.routes.js';
 import { teacherRouter } from './teacher.routes.js';
+import { uploadRouter } from './upload.routes.js';
 
 const router = Router();
 
@@ -24,5 +25,6 @@ router.use('/super-admin', superAdminRouter);
 router.use('/admin', adminRouter);
 router.use('/teacher', teacherRouter);
 router.use('/student', studentRouter);
+router.use('/uploads', uploadRouter);
 
 export { router as apiRouter };

@@ -14,6 +14,9 @@ export function getDbStatus() {
 
 export async function connectDb() {
   await mongoose.connect(env.mongoUri, {
-    serverSelectionTimeoutMS: env.mongoConnectTimeoutMs
+    serverSelectionTimeoutMS: env.mongoConnectTimeoutMs,
+    connectTimeoutMS: env.mongoConnectTimeoutMs,
+    socketTimeoutMS: env.mongoConnectTimeoutMs,
+    family: 4
   });
 }

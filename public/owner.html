@@ -3,15 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>LIFT Owner Panel</title>
+    <title>LIFT Owner Console</title>
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/owner.css" />
   </head>
   <body>
     <main class="owner-shell">
-      <section class="owner-card">
+      <section class="owner-card owner-login-card" id="ownerLoginCard">
         <h1>Owner Login</h1>
-        <p>Private panel for creating institutions.</p>
+        <p>Private console for controlling institutions.</p>
         <form id="ownerLoginForm" class="owner-form">
           <label for="ownerInstitutionId">Institution ID</label>
           <input id="ownerInstitutionId" required />
@@ -22,51 +22,160 @@
           <label for="ownerPassword">Password</label>
           <input id="ownerPassword" type="password" required />
 
+          <label class="remember-row" for="ownerRememberMe">
+            <input id="ownerRememberMe" type="checkbox" checked />
+            Remember me on this browser
+          </label>
+
           <button class="cta-main" type="submit">Sign In</button>
         </form>
         <p id="ownerLoginStatus" class="auth-note"></p>
       </section>
 
-      <section class="owner-card hidden" id="ownerPanel">
-        <h2>Create Institution</h2>
-        <form id="createInstitutionForm" class="owner-form">
-          <label for="institutionName">Institution Name</label>
-          <input id="institutionName" required />
+      <section id="ownerDashboard" class="owner-dashboard hidden">
+        <section class="owner-card owner-topbar">
+          <div>
+            <h2>Institution Operations Dashboard</h2>
+            <p>Monitor plans, manage limits, and control subscriptions.</p>
+          </div>
+          <div class="owner-top-actions">
+            <button class="cta-soft" id="refreshDashboardBtn" type="button">Refresh Data</button>
+            <button class="cta-soft" id="ownerSignOutBtn" type="button">Sign Out</button>
+          </div>
+        </section>
 
-          <label for="cityCode">City Code (2-6 letters)</label>
-          <input id="cityCode" placeholder="KOC" />
+        <section class="owner-card">
+          <h3>Live Snapshot</h3>
+          <div class="owner-summary-grid" id="ownerSummaryGrid"></div>
+        </section>
 
-          <label for="planType">Plan</label>
-          <select id="planType">
-            <option value="trial">Trial</option>
-            <option value="paid">Paid</option>
-          </select>
+        <section class="owner-card">
+          <div class="owner-table-header">
+            <h3>Product Analytics</h3>
+            <div class="owner-top-actions">
+              <select id="ownerAnalyticsWindow">
+                <option value="7">Last 7 days</option>
+                <option value="30" selected>Last 30 days</option>
+                <option value="90">Last 90 days</option>
+              </select>
+              <button class="cta-soft" id="refreshAnalyticsBtn" type="button">Refresh Analytics</button>
+            </div>
+          </div>
 
-          <label for="trialTeacherLimit">Teacher Limit</label>
-          <input id="trialTeacherLimit" type="number" min="1" value="5" />
+          <div id="ownerRoleFunnelGrid" class="owner-summary-grid"></div>
 
-          <label for="trialSubjectLimitPerTeacher">Subjects Per Teacher Limit</label>
-          <input id="trialSubjectLimitPerTeacher" type="number" min="1" value="5" />
+          <div class="owner-analytics-two-col">
+            <article class="owner-analytics-card">
+              <h4>Institution Funnel</h4>
+              <div id="ownerInstitutionFunnel"></div>
+            </article>
+            <article class="owner-analytics-card">
+              <h4>Top Event Types</h4>
+              <div id="ownerTopEvents"></div>
+            </article>
+          </div>
+        </section>
 
-          <label for="studentLimit">Student Limit</label>
-          <input id="studentLimit" type="number" min="1" value="200" />
+        <section class="owner-card">
+          <h3>Owner Account Security</h3>
+          <form id="ownerPasswordForm" class="owner-form owner-password-form">
+            <label for="ownerCurrentPassword">Current Password</label>
+            <input id="ownerCurrentPassword" type="password" required />
 
-          <label for="adminName">Admin Full Name</label>
-          <input id="adminName" value="Institution Admin" />
+            <label for="ownerNewPassword">New Password</label>
+            <input id="ownerNewPassword" type="password" minlength="6" required />
 
-          <label for="adminEmail">Admin Email</label>
-          <input id="adminEmail" type="email" />
+            <label for="ownerConfirmPassword">Confirm New Password</label>
+            <input id="ownerConfirmPassword" type="password" minlength="6" required />
 
-          <button class="cta-main" type="submit">Generate Institution + Admin</button>
-        </form>
-        <p id="ownerCreateStatus" class="auth-note"></p>
-        <pre id="ownerCredentialBox" class="credential-preview"></pre>
-      </section>
+            <button class="cta-main" type="submit">Update Owner Password</button>
+          </form>
+          <p id="ownerPasswordStatus" class="auth-note"></p>
+        </section>
 
-      <section class="owner-card hidden" id="ownerInstitutionListCard">
-        <h2>Institutions</h2>
-        <button class="cta-soft" id="refreshInstitutionsBtn">Refresh</button>
-        <div id="ownerInstitutionList" class="owner-list"></div>
+        <section class="owner-card">
+          <h3>Create Institution</h3>
+          <form id="createInstitutionForm" class="owner-form">
+            <label for="institutionName">Institution Name</label>
+            <input id="institutionName" required />
+
+            <label for="cityCode">City Code (2-6 letters)</label>
+            <input id="cityCode" placeholder="KOC" />
+
+            <label for="planType">Plan</label>
+            <select id="planType">
+              <option value="trial">Trial</option>
+              <option value="paid">Paid</option>
+            </select>
+
+            <label for="trialTeacherLimit">Teacher Limit</label>
+            <input id="trialTeacherLimit" type="number" min="1" value="5" />
+
+            <label for="trialSubjectLimitPerTeacher">Subjects Per Teacher Limit</label>
+            <input id="trialSubjectLimitPerTeacher" type="number" min="1" value="5" />
+
+            <label for="studentLimit">Student Limit</label>
+            <input id="studentLimit" type="number" min="1" value="200" />
+
+            <label for="adminName">Admin Full Name</label>
+            <input id="adminName" value="Institution Admin" />
+
+            <label for="adminEmail">Admin Email</label>
+            <input id="adminEmail" type="email" />
+
+            <button class="cta-main" type="submit">Generate Institution + Admin</button>
+          </form>
+          <p id="ownerCreateStatus" class="auth-note"></p>
+          <pre id="ownerCredentialBox" class="credential-preview"></pre>
+        </section>
+
+        <section class="owner-card">
+          <div class="owner-table-header">
+            <h3>Institution Database</h3>
+            <input id="ownerInstitutionSearch" type="text" placeholder="Search by institution name or ID" />
+          </div>
+          <p class="owner-table-help">
+            Edit limits and status directly. Use Cancel Subscription to disable access when payment stops.
+          </p>
+          <div class="owner-table-wrap">
+            <table class="owner-table">
+              <thead>
+                <tr>
+                  <th>Institution</th>
+                  <th>Plan</th>
+                  <th>Payment</th>
+                  <th>Active</th>
+                  <th>Teacher Limit</th>
+                  <th>Subjects/Teacher</th>
+                  <th>Student Limit</th>
+                  <th>Teachers</th>
+                  <th>Students</th>
+                  <th>Subjects</th>
+                  <th>Admin Username</th>
+                  <th>Admin Temp Password</th>
+                  <th>Subscription End</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="ownerInstitutionTableBody"></tbody>
+            </table>
+          </div>
+          <p id="ownerTableStatus" class="auth-note"></p>
+        </section>
+
+        <section class="owner-card">
+          <div class="owner-table-header">
+            <h3>Cancelled Subscription Cleanup</h3>
+            <button class="cta-soft" id="purgeCancelledBtn" type="button">
+              Delete All Cancelled Subscriptions
+            </button>
+          </div>
+          <p class="owner-table-help">
+            This permanently deletes all institutions with cancelled payment status (except Owner HQ),
+            including their users, tests, resources, and related records.
+          </p>
+          <p id="ownerPurgeStatus" class="auth-note"></p>
+        </section>
       </section>
     </main>
 

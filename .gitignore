@@ -7,3 +7,5 @@ yarn-error.log*
 .env
 backend/.env
 .vercel
+
+.npm-cache/

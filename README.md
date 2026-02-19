@@ -1,92 +1,158 @@
 # LIFT Educations Portal
 
-Production-style MVP with real backend APIs and role-based flows.
+White-label EdTech MVP with Owner, Admin, Teacher, and Student portals.
 
-## Roles
+## Current Product State
 
-- `super_admin` (owner)
-- `admin` (institution)
-- `teacher`
-- `student`
+This version is cleaned and simplified for stability and usability:
 
-## Working Features
+- Logo rendering removed from portal UI for a cleaner layout.
+- Student `Insights` removed from UI and backend student routes.
+- Student planner is now a personal To-Do style planner (local browser persistence).
+- Teacher message flow simplified (subject filter + student dropdown + text message).
+- Teacher class planning flow added and connected to student class view.
+- Objective test creation improved with predefined question boxes.
+- Notification "mark read" behavior now removes notifications.
 
-- Real login for admin/teacher/student
-- First-time student password setup
-- Password change in Accounts for all roles
-- Hidden Owner panel (`/owner.html`) to create institutions
-- Auto-generated institution IDs (`LIFT-<CITY>-<4 digits>`)
-- Admin can create teachers, filter/search students, and message anyone
-- Teacher can:
-  - create/delete subjects (with syllabus PDF URL)
-  - create/delete students
-  - upload/delete resources (PDF/eBook/video/link URL)
-  - create tests (MCQ/Long)
-  - message students
-  - export student CSV
-- Student can:
-  - view today/pending tests
-  - attempt tests in-app with timer
-  - view score history
-  - download answer key (MCQ)
-  - view resources with intelligent search/filter
-  - view syllabus list and open PDF
-  - message teacher
-- Notification pipelines for resource upload, test publish, messages, and test submission
+## Role Flows
+
+### Owner (`/owner.html`)
+
+- Secure owner login
+- Create institutions
+- Manage institution plans, limits, and subscription status
+- Reset institution admin password
+- View owner-level analytics
+
+### Admin
+
+- Create/delete teacher accounts
+- View/filter students
+- Message teachers and students
+- View institution summary
+- Account password change
+
+### Teacher
+
+- Create/update/delete subjects (syllabus PDF required)
+- Create/delete students
+- Upload/delete resources
+- Conduct tests:
+  - MCQ (20 questions, 5 minutes)
+  - True/False (20 questions, 5 minutes)
+  - Long/Short answer tests
+- Message students
+- Class planner:
+  - Plan daily classes
+  - Attach optional resource while creating class
+
+### Student
+
+- View dashboard, today tests, pending tests, today classes
+- Attempt tests with timer (objective types) and submit in-app
+- View test history and download answer keys for objective tests
+- View resources and syllabus
+- Message teachers
+- Use personal study To-Do planner
+- Focus mode toggle
+- Account password change
+
+## Resource Delivery Rules (Important)
+
+Resource visibility is now strictly scoped so content reaches the concerned students only:
+
+- Students only get resources for their assigned subjects.
+- Students only get resources from their assigned teacher profile.
+- Class planner resources are created as standard resources and therefore appear in student resources as well.
+- Student "Today Classes" is filtered by assigned subjects and assigned teacher.
+
+## Project Structure
+
+```text
+/Users/anandsojan/Documents/Codex-Student-Teacher-Dashboard
+├── public/                 # Frontend pages and portal scripts
+├── backend/src/            # Express API, models, controllers, services
+├── api/                    # Vercel serverless API bridge
+├── server.js               # Local static frontend server
+├── vercel.json             # Vercel routes/config
+└── README.md
+```
 
 ## Local Run
 
+From project root:
+
 ```bash
-cd /Users/anandsojan/Documents/Codex-Student-Teacher-Dashboard
 npm run backend:install
 npm run portal
 ```
 
 Open:
+
 - Main portal: `http://127.0.0.1:3000`
-- Owner panel (hidden): `http://127.0.0.1:3000/owner.html`
+- Owner portal: `http://127.0.0.1:3000/owner.html`
 - API health: `http://127.0.0.1:5050/api/health`
 
-Note: if a port is busy, startup auto-falls to the next free port.
-
-## Seed Owner Account (run once)
+## Seed Owner Account
 
 ```bash
-cd /Users/anandsojan/Documents/Codex-Student-Teacher-Dashboard/backend
+cd backend
 npm run seed:super-admin
 ```
 
-Owner credentials come from `/backend/.env`:
+Credentials come from `backend/.env`:
+
 - `SUPER_ADMIN_INSTITUTION_ID`
 - `SUPER_ADMIN_USERNAME`
 - `SUPER_ADMIN_PASSWORD`
 
-## GitHub + Vercel Deployment
+## Deploy (Vercel)
 
-1. Push repo to GitHub.
-2. Import repo in Vercel.
-3. Add environment variables in Vercel:
-   - `NODE_ENV=production`
-   - `HOST=127.0.0.1`
-   - `PORT=5050`
-   - `MAX_PORT_HOPS=20`
-   - `MONGODB_URI=<atlas-uri>`
-   - `MONGO_RETRY_MS=5000`
-   - `MONGO_CONNECT_TIMEOUT_MS=10000`
-   - `JWT_SECRET=<strong-random-secret>`
-   - `JWT_EXPIRES_IN=7d`
-   - `CORS_ORIGIN=https://<your-vercel-domain>`
-   - `SUPER_ADMIN_INSTITUTION_ID=LIFT-HQ-0000`
-   - `SUPER_ADMIN_USERNAME=owner`
-   - `SUPER_ADMIN_PASSWORD=<strong-owner-password>`
-4. Deploy.
-5. Open:
-   - `https://<your-domain>/`
-   - `https://<your-domain>/owner.html`
+Project is configured for Vercel with API routed through `/api/*`.
 
-## Security Before Launch
+Required env vars (minimum):
 
-- Rotate MongoDB password immediately.
-- Use a strong `JWT_SECRET`.
-- Restrict MongoDB network access.
-- Keep owner credentials private.
+- `MONGODB_URI`
+- `JWT_SECRET`
+- `CORS_ORIGIN`
+- `SUPER_ADMIN_INSTITUTION_ID`
+- `SUPER_ADMIN_USERNAME`
+- `SUPER_ADMIN_PASSWORD`
+
+Optional upload/storage vars:
+
+- `STORAGE_PROVIDER=inline|s3|cloudinary`
+- Cloudinary or S3 variables depending on provider
+
+## Install As App (PWA)
+
+The portal now supports installable PWA mode:
+
+- Manifest: `/manifest.webmanifest`
+- Service worker: `/sw.js`
+- App icons: `/public/icons/`
+
+Install flow:
+
+1. Open the live URL in Chrome/Edge (Android/Desktop) or Safari (iPhone).
+2. Sign in once and allow assets to cache.
+3. Install:
+   - Chrome/Edge: use the "Install app" prompt.
+   - Safari iPhone: Share -> Add to Home Screen.
+
+## Cleanup Done in This Version
+
+- Removed redundant API catch-all file: `api/[...path].js`
+- Removed unused logo asset from runtime flow
+- Reduced dead student feature surface (insights/planner-cards/doubt routes removed)
+- Simplified student-plus controller to only used endpoints
+- Removed unused helper logic from frontend
+
+## Next Recommended Step
+
+Move to backend hardening and production readiness:
+
+1. Add request-level validation tests for critical routes.
+2. Add role-based integration tests (Owner/Admin/Teacher/Student).
+3. Add DB indexes review for scaling.
+4. Lock secrets and rotate all credentials before production rollout.

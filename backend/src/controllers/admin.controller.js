@@ -2,19 +2,35 @@ import { z } from 'zod';
 import { StudentProfile } from '../models/StudentProfile.js';
 import { Subject } from '../models/Subject.js';
 import { User } from '../models/User.js';
+import { trackAnalyticsEvent } from '../services/analytics.service.js';
+import { triggerAutomation } from '../services/automation.service.js';
 import { badRequest, created, ok } from '../utils/http.js';
 
 const createTeacherSchema = z.object({
-  fullName: z.string().min(2),
-  username: z.string().min(3),
-  password: z.string().min(6),
-  email: z.string().email().optional().or(z.literal('')),
-  phone: z.string().optional().or(z.literal(''))
+  fullName: z.string().trim().min(2, 'Full name must be at least 2 characters.'),
+  username: z.string().trim().min(3, 'Username must be at least 3 characters.'),
+  password: z.string().min(6, 'Password must be at least 6 characters.'),
+  email: z.preprocess(
+    (value) => {
+      if (typeof value !== 'string') return '';
+      return value.trim();
+    },
+    z.string().email('Please enter a valid email address.').or(z.literal(''))
+  ),
+  phone: z.preprocess(
+    (value) => {
+      if (typeof value !== 'string') return '';
+      return value.trim();
+    },
+    z.string().or(z.literal(''))
+  )
 });
 
 export async function createTeacher(req, res) {
   const parsed = createTeacherSchema.safeParse(req.body);
-  if (!parsed.success) return badRequest(res, 'Invalid teacher payload.');
+  if (!parsed.success) {
+    return badRequest(res, parsed.error.issues[0]?.message || 'Invalid teacher payload.');
+  }
 
   const { fullName, username, password, email, phone } = parsed.data;
   const existing = await User.findOne({
@@ -32,7 +48,45 @@ export async function createTeacher(req, res) {
     passwordHash,
     email: email || '',
     phone: phone || '',
-    mustChangePassword: true
+    mustChangePassword: false
+  });
+
+  await trackAnalyticsEvent({
+    institutionId: req.auth.institutionId,
+    userId: teacher._id,
+    role: 'teacher',
+    eventType: 'teacher_account_created',
+    stage: 'onboarding',
+    metadata: {
+      username: teacher.username
+    }
+  });
+  await trackAnalyticsEvent({
+    institutionId: req.auth.institutionId,
+    userId: req.auth.userId,
+    role: 'admin',
+    eventType: 'teacher_created_by_admin',
+    stage: 'activation',
+    metadata: {
+      teacherId: teacher._id.toString(),
+      teacherUsername: teacher.username
+    }
+  });
+
+  await triggerAutomation({
+    eventType: 'onboarding.new_teacher',
+    institutionId: req.auth.institutionId,
+    triggerRole: 'admin',
+    payload: {
+      teacher: {
+        id: teacher._id.toString(),
+        fullName: teacher.fullName,
+        username: teacher.username,
+        email: teacher.email,
+        phone: teacher.phone,
+        temporaryPassword: password
+      }
+    }
   });
 
   return created(res, {
@@ -49,7 +103,8 @@ export async function createTeacher(req, res) {
 export async function listTeachers(req, res) {
   const teachers = await User.find({
     institutionId: req.auth.institutionId,
-    role: 'teacher'
+    role: 'teacher',
+    isActive: true
   })
     .select('-passwordHash')
     .lean();
@@ -120,8 +175,8 @@ export async function listStudents(req, res) {
 
 export async function dashboardSummary(req, res) {
   const [teacherCount, studentCount, subjectCount] = await Promise.all([
-    User.countDocuments({ institutionId: req.auth.institutionId, role: 'teacher' }),
-    User.countDocuments({ institutionId: req.auth.institutionId, role: 'student' }),
+    User.countDocuments({ institutionId: req.auth.institutionId, role: 'teacher', isActive: true }),
+    User.countDocuments({ institutionId: req.auth.institutionId, role: 'student', isActive: true }),
     Subject.countDocuments({ institutionId: req.auth.institutionId })
   ]);
 
@@ -143,4 +198,34 @@ export async function listSubjects(req, res) {
     .lean();
 
   return ok(res, { subjects });
+}
+
+export async function deleteTeacher(req, res) {
+  const teacherId = String(req.params.teacherId || '').trim();
+  if (!teacherId) return badRequest(res, 'Teacher ID is required.');
+
+  const teacher = await User.findOne({
+    _id: teacherId,
+    institutionId: req.auth.institutionId,
+    role: 'teacher',
+    isActive: true
+  });
+  if (!teacher) return notFound(res, 'Teacher not found.');
+
+  teacher.isActive = false;
+  await teacher.save();
+
+  await trackAnalyticsEvent({
+    institutionId: req.auth.institutionId,
+    userId: req.auth.userId,
+    role: 'admin',
+    eventType: 'teacher_deactivated',
+    stage: 'ops',
+    metadata: {
+      teacherId: teacher._id.toString(),
+      teacherUsername: teacher.username
+    }
+  });
+
+  return ok(res, {}, 'Teacher removed successfully.');
 }

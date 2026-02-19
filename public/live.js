@@ -1,78 +1,209 @@
 const app = document.getElementById('app');
 
 const SESSION_KEY = 'lift_live_session_v2';
+const SESSION_REMEMBER_KEY = 'lift_live_session_remember_v1';
+const LOGIN_HINTS_KEY = 'lift_live_login_hints_v1';
+const STUDENT_TODO_KEY = 'lift_student_todos_v1';
 const API_CANDIDATE_PORTS = Array.from({ length: 21 }, (_, index) => 5050 + index);
+const MCQ_QUESTION_LIMIT = 20;
+const MCQ_DURATION_MINUTES = 5;
+
+if (typeof window !== 'undefined' && window.pdfjsLib?.GlobalWorkerOptions) {
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
 
 const runtime = {
   attemptTimerId: null,
-  attemptSubmitting: false
+  attemptSubmitting: false,
+  debounceHandles: {}
 };
+
+function todayIsoDate() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 const state = {
   apiBase: '',
   apiResolved: false,
   session: loadSession(),
+  loginHints: loadLoginHints(),
+  authRememberMe: loadRememberPreference(),
   adminTab: 'dashboard',
+  adminAnalyticsWindow: '30',
   teacherTab: 'dashboard',
+  teacherClassPlanDate: todayIsoDate(),
+  teacherClassPlanResourceType: 'pdf',
   studentTab: 'dashboard',
+  adminTeacherSecrets: {},
+  teacherStudentSecrets: {},
   adminStudentQuery: '',
   adminSubjectFilter: '',
-  adminMessageUserId: '',
   teacherStudentQuery: '',
   teacherSubjectFilter: '',
   teacherResourceSearch: '',
   teacherResourceType: '',
+  teacherResourceCreateType: 'pdf',
   teacherResourceSubjectId: '',
-  teacherMessageStudentId: '',
   teacherTestSubjectId: '',
   teacherTestType: 'mcq',
+  teacherTestAudienceMode: 'all',
+  teacherTestSelectedStudentIds: [],
+  teacherAssessmentSubjectId: '',
+  teacherAssessmentType: '',
+  teacherAssessmentStatus: 'pending',
+  teacherAssessmentQuery: '',
   studentResourceSearch: '',
   studentResourceType: '',
   studentResourceSubjectId: '',
-  studentMessageTeacherId: '',
   studentSyllabusSubjectId: ''
 };
 
 function loadSession() {
+  const parseStorage = (storage) => {
+    try {
+      const raw = storage.getItem(SESSION_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !parsed.token || !parsed.user || !parsed.institutionId) return null;
+      return parsed;
+    } catch (error) {
+      return null;
+    }
+  };
+
+  return parseStorage(localStorage) || parseStorage(sessionStorage);
+}
+
+function loadRememberPreference() {
+  return localStorage.getItem(SESSION_REMEMBER_KEY) !== '0';
+}
+
+function loadLoginHints() {
   try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    if (!raw) return null;
+    const raw = localStorage.getItem(LOGIN_HINTS_KEY);
+    if (!raw) return {};
     const parsed = JSON.parse(raw);
-    if (!parsed || !parsed.token || !parsed.user || !parsed.institutionId) return null;
-    return parsed;
+    return parsed && typeof parsed === 'object' ? parsed : {};
   } catch (error) {
-    return null;
+    return {};
   }
 }
 
-function saveSession(session) {
+function saveLoginHints(hints) {
+  state.loginHints = hints || {};
+  localStorage.setItem(LOGIN_HINTS_KEY, JSON.stringify(state.loginHints));
+}
+
+function getLoginHint(role) {
+  const hint = state.loginHints?.[role];
+  if (!hint) return { institutionId: '', username: '' };
+  return {
+    institutionId: String(hint.institutionId || ''),
+    username: String(hint.username || '')
+  };
+}
+
+function updateLoginHint(role, institutionId, username, remember) {
+  if (!role) return;
+  const nextHints = { ...(state.loginHints || {}) };
+
+  if (remember) {
+    nextHints[role] = {
+      institutionId: String(institutionId || '').trim(),
+      username: String(username || '').trim()
+    };
+  } else {
+    delete nextHints[role];
+  }
+
+  saveLoginHints(nextHints);
+}
+
+function loadStudentTodos(userId) {
+  if (!userId) return [];
+  try {
+    const raw = localStorage.getItem(STUDENT_TODO_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const list = Array.isArray(parsed?.[userId]) ? parsed[userId] : [];
+    return list
+      .map((item) => ({
+        id: String(item.id || `${Date.now()}-${Math.random()}`),
+        text: sanitizeValue(item.text || ''),
+        dueDate: String(item.dueDate || ''),
+        completed: Boolean(item.completed),
+        createdAt: item.createdAt || new Date().toISOString()
+      }))
+      .filter((item) => item.text);
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveStudentTodos(userId, todos) {
+  if (!userId) return;
+  let parsed = {};
+  try {
+    parsed = JSON.parse(localStorage.getItem(STUDENT_TODO_KEY) || '{}') || {};
+  } catch (error) {
+    parsed = {};
+  }
+  parsed[userId] = Array.isArray(todos) ? todos : [];
+  localStorage.setItem(STUDENT_TODO_KEY, JSON.stringify(parsed));
+}
+
+function saveSession(session, remember = state.authRememberMe) {
   state.session = session;
   if (!session) {
     localStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(SESSION_KEY);
     return;
   }
-  localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+
+  const serialized = JSON.stringify(session);
+  const shouldRemember = Boolean(remember);
+  localStorage.setItem(SESSION_REMEMBER_KEY, shouldRemember ? '1' : '0');
+  state.authRememberMe = shouldRemember;
+
+  if (shouldRemember) {
+    localStorage.setItem(SESSION_KEY, serialized);
+    sessionStorage.removeItem(SESSION_KEY);
+    return;
+  }
+
+  sessionStorage.setItem(SESSION_KEY, serialized);
+  localStorage.removeItem(SESSION_KEY);
 }
 
 function resetUiStateOnLogout() {
   state.adminTab = 'dashboard';
+  state.adminAnalyticsWindow = '30';
   state.teacherTab = 'dashboard';
+  state.teacherClassPlanDate = todayIsoDate();
+  state.teacherClassPlanResourceType = 'pdf';
   state.studentTab = 'dashboard';
+  state.adminTeacherSecrets = {};
+  state.teacherStudentSecrets = {};
   state.adminStudentQuery = '';
   state.adminSubjectFilter = '';
-  state.adminMessageUserId = '';
   state.teacherStudentQuery = '';
   state.teacherSubjectFilter = '';
   state.teacherResourceSearch = '';
   state.teacherResourceType = '';
+  state.teacherResourceCreateType = 'pdf';
   state.teacherResourceSubjectId = '';
-  state.teacherMessageStudentId = '';
   state.teacherTestSubjectId = '';
   state.teacherTestType = 'mcq';
+  state.teacherTestAudienceMode = 'all';
+  state.teacherTestSelectedStudentIds = [];
+  state.teacherAssessmentSubjectId = '';
+  state.teacherAssessmentType = '';
+  state.teacherAssessmentStatus = 'pending';
+  state.teacherAssessmentQuery = '';
   state.studentResourceSearch = '';
   state.studentResourceType = '';
   state.studentResourceSubjectId = '';
-  state.studentMessageTeacherId = '';
   state.studentSyllabusSubjectId = '';
 }
 
@@ -82,6 +213,121 @@ function clearAttemptTimer() {
     runtime.attemptTimerId = null;
   }
   runtime.attemptSubmitting = false;
+}
+
+function debounceByKey(key, callback, delayMs = 180) {
+  if (runtime.debounceHandles[key]) {
+    clearTimeout(runtime.debounceHandles[key]);
+  }
+  runtime.debounceHandles[key] = setTimeout(() => {
+    callback();
+    delete runtime.debounceHandles[key];
+  }, delayMs);
+}
+
+function ensureToastStack() {
+  let stack = document.getElementById('toastStack');
+  if (stack) return stack;
+  stack = document.createElement('div');
+  stack.id = 'toastStack';
+  stack.className = 'toast-stack';
+  document.body.appendChild(stack);
+  return stack;
+}
+
+function showToast(message, type = 'info', timeoutMs = 2600) {
+  const safe = String(message || '').trim();
+  if (!safe) return;
+  const stack = ensureToastStack();
+  const toast = document.createElement('article');
+  toast.className = `toast toast-${type}`;
+  toast.textContent = safe;
+  stack.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('show'));
+  setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => {
+      toast.remove();
+      if (!stack.children.length) stack.remove();
+    }, 220);
+  }, timeoutMs);
+}
+
+function withButtonLoading(button, loadingText, action) {
+  if (!button) return action();
+  if (button.dataset.loading === '1') return Promise.resolve();
+
+  const originalText = button.textContent;
+  button.dataset.loading = '1';
+  button.disabled = true;
+  button.classList.add('is-loading');
+  button.innerHTML = `<span class="btn-content"><span class="btn-spinner" aria-hidden="true"></span><span>${loadingText}</span></span>`;
+
+  const finish = () => {
+    button.dataset.loading = '0';
+    button.disabled = false;
+    button.classList.remove('is-loading');
+    button.textContent = originalText;
+  };
+
+  return Promise.resolve()
+    .then(() => action())
+    .finally(finish);
+}
+
+function sanitizeValue(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+async function uploadAsset(file, folder = 'uploads') {
+  if (!file) {
+    throw new Error('File missing.');
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('folder', folder);
+
+  const result = await api('/uploads', {
+    method: 'POST',
+    body: formData
+  });
+
+  const fileData = result?.data?.file;
+  if (!fileData?.url) {
+    throw new Error('Upload response is missing file URL.');
+  }
+
+  return fileData;
+}
+
+function isHttpUrl(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch (error) {
+    return false;
+  }
+}
+
+async function copyTextToClipboard(text) {
+  const safeText = String(text || '');
+  if (!safeText) return;
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(safeText);
+    return;
+  }
+  const area = document.createElement('textarea');
+  area.value = safeText;
+  area.setAttribute('readonly', 'readonly');
+  area.style.position = 'absolute';
+  area.style.left = '-9999px';
+  document.body.appendChild(area);
+  area.select();
+  document.execCommand('copy');
+  area.remove();
 }
 
 function escapeHtml(value) {
@@ -94,23 +340,7 @@ function escapeHtml(value) {
 }
 
 function logoMarkup(compact = false) {
-  return `
-    <div class="brand-shell ${compact ? 'compact' : ''}">
-      <div class="logo-wrap ${compact ? 'compact' : ''}">
-        <img
-          src="/logo.png"
-          alt="LIFT Educations logo"
-          class="company-logo"
-          onerror="this.style.display='none'; this.nextElementSibling.style.display='grid';"
-        />
-        <div class="logo-fallback">LIFT</div>
-      </div>
-      <div class="brand-copy">
-        <p class="brand-name">LIFT Educations</p>
-        <p class="brand-sub">Smart Learning Platform</p>
-      </div>
-    </div>
-  `;
+  return '';
 }
 
 function roleLabel(role) {
@@ -136,6 +366,15 @@ function formatDate(value) {
   }
 }
 
+function formatTestType(type) {
+  const normalized = String(type || '').trim().toLowerCase();
+  if (normalized === 'mcq') return 'MCQ';
+  if (normalized === 'true_false') return 'TRUE / FALSE';
+  if (normalized === 'long') return 'LONG ANSWER';
+  if (normalized === 'short') return 'SHORT ANSWER';
+  return normalized ? normalized.replace(/_/g, ' ').toUpperCase() : '-';
+}
+
 function toQueryString(params) {
   const search = new URLSearchParams();
   Object.entries(params || {}).forEach(([key, value]) => {
@@ -155,6 +394,127 @@ function navButtonsMarkup(items, activeValue, attrName) {
         `<button class="nav-tab ${activeValue === item.value ? 'active' : ''}" ${attrName}="${item.value}">${escapeHtml(item.label)}</button>`
     )
     .join('');
+}
+
+function objectiveQuestionBuilderMarkup(type) {
+  const isTrueFalse = type === 'true_false';
+  const cards = Array.from({ length: MCQ_QUESTION_LIMIT }, (_, index) => {
+    const serial = index + 1;
+    if (isTrueFalse) {
+      return `
+        <article class="question-builder-card">
+          <h4>Question ${serial}</h4>
+          <input id="objective-q-${index}" type="text" placeholder="Enter question ${serial}" />
+          <select id="objective-q-${index}-answer">
+            <option value="0">Correct Answer: True</option>
+            <option value="1">Correct Answer: False</option>
+          </select>
+        </article>
+      `;
+    }
+
+    return `
+      <article class="question-builder-card">
+        <h4>Question ${serial}</h4>
+        <input id="objective-q-${index}" type="text" placeholder="Enter question ${serial}" />
+        <div class="builder-options">
+          <input id="objective-q-${index}-opt-0" type="text" placeholder="Option A" />
+          <input id="objective-q-${index}-opt-1" type="text" placeholder="Option B" />
+          <input id="objective-q-${index}-opt-2" type="text" placeholder="Option C" />
+          <input id="objective-q-${index}-opt-3" type="text" placeholder="Option D" />
+        </div>
+        <select id="objective-q-${index}-answer">
+          <option value="0">Correct Option: A</option>
+          <option value="1">Correct Option: B</option>
+          <option value="2">Correct Option: C</option>
+          <option value="3">Correct Option: D</option>
+        </select>
+      </article>
+    `;
+  }).join('');
+
+  return `
+    <section class="builder-box">
+      <p class="muted">Use the boxes below to create all ${MCQ_QUESTION_LIMIT} questions.</p>
+      <div class="objective-builder-grid">${cards}</div>
+    </section>
+  `;
+}
+
+function collectObjectiveQuestions(type) {
+  const questions = [];
+  for (let index = 0; index < MCQ_QUESTION_LIMIT; index += 1) {
+    const questionText = sanitizeValue(
+      document.getElementById(`objective-q-${index}`)?.value || ''
+    );
+    if (!questionText) {
+      throw new Error(`Question ${index + 1} text is required.`);
+    }
+
+    if (type === 'true_false') {
+      const correctIndex = Number(
+        document.getElementById(`objective-q-${index}-answer`)?.value
+      );
+      if (correctIndex !== 0 && correctIndex !== 1) {
+        throw new Error(`Question ${index + 1} must have a correct answer.`);
+      }
+      questions.push({
+        text: questionText,
+        options: ['True', 'False'],
+        correctIndex
+      });
+      continue;
+    }
+
+    const options = [0, 1, 2, 3].map((optionIndex) =>
+      sanitizeValue(document.getElementById(`objective-q-${index}-opt-${optionIndex}`)?.value || '')
+    );
+    if (options.some((option) => !option)) {
+      throw new Error(`Question ${index + 1} must include all four options.`);
+    }
+
+    const correctIndex = Number(
+      document.getElementById(`objective-q-${index}-answer`)?.value
+    );
+    if (!Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex > 3) {
+      throw new Error(`Question ${index + 1} must have a valid correct option.`);
+    }
+
+    questions.push({
+      text: questionText,
+      options,
+      correctIndex
+    });
+  }
+  return questions;
+}
+
+function funnelCardMarkup(title, metrics) {
+  if (!metrics) {
+    return `
+      <article class="panel stat">
+        <h3>${escapeHtml(title)}</h3>
+        <p>No analytics yet.</p>
+      </article>
+    `;
+  }
+
+  const steps = Array.isArray(metrics.steps) ? metrics.steps : [];
+  return `
+    <article class="panel">
+      <h3>${escapeHtml(title)}</h3>
+      <p class="muted">Activation: <strong>${escapeHtml(metrics.activationRate)}%</strong> | Drop-off: <strong>${escapeHtml(metrics.dropOffRate)}%</strong></p>
+      <p class="muted">Retention (7d/30d): <strong>${escapeHtml(metrics.retention?.active7d || 0)}</strong> / <strong>${escapeHtml(metrics.retention?.active30d || 0)}</strong></p>
+      <div class="stack">
+        ${steps
+          .map(
+            (item) =>
+              `<p class="stack-item"><strong>${escapeHtml(item.name)}:</strong> ${escapeHtml(item.count)} <small>(drop ${escapeHtml(item.dropOffFromPrevious)})</small></p>`
+          )
+          .join('')}
+      </div>
+    </article>
+  `;
 }
 
 function bindTabButtons(selector, callback) {
@@ -202,86 +562,6 @@ function downloadTextFile(filename, content) {
   URL.revokeObjectURL(url);
 }
 
-function notificationsMarkup(notifications) {
-  if (!notifications.length) {
-    return '<p class="muted">No new notifications.</p>';
-  }
-
-  return `
-    <div class="stack">
-      ${notifications
-        .slice(0, 6)
-        .map(
-          (item) => `
-            <p class="stack-item">${escapeHtml(item.message)}<br /><small>${formatDate(item.createdAt)}</small></p>
-          `
-        )
-        .join('')}
-    </div>
-  `;
-}
-
-function messageFeedMarkup(messages, currentUserId) {
-  if (!messages.length) return '<p class="muted">No messages yet.</p>';
-
-  return `
-    <div class="social-feed">
-      ${messages
-        .map((item) => {
-          const mine = item.fromUserId === currentUserId;
-          const senderName = item.fromUser?.fullName || item.fromUser?.username || 'User';
-          return `
-            <article class="feed-card ${mine ? 'mine' : ''}">
-              <div class="feed-meta">
-                <strong>${escapeHtml(senderName)}</strong>
-                <small>${formatDate(item.createdAt)}</small>
-              </div>
-              <p>${escapeHtml(item.text)}</p>
-            </article>
-          `;
-        })
-        .join('')}
-    </div>
-  `;
-}
-
-function parseMcqQuestions(raw) {
-  const lines = String(raw || '')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (lines.length !== 20) {
-    throw new Error('MCQ requires exactly 20 lines/questions.');
-  }
-
-  return lines.map((line, index) => {
-    const parts = line
-      .split('|')
-      .map((part) => part.trim())
-      .filter(Boolean);
-
-    if (parts.length < 4) {
-      throw new Error(`Line ${index + 1} format is invalid.`);
-    }
-
-    const question = parts[0];
-    const correctValue = parts[parts.length - 1];
-    const options = parts.slice(1, -1);
-    const correctIndex = Number(correctValue) - 1;
-
-    if (!Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex >= options.length) {
-      throw new Error(`Line ${index + 1} correct option index is invalid.`);
-    }
-
-    return {
-      text: question,
-      options,
-      correctIndex
-    };
-  });
-}
-
 function parseLongQuestions(raw) {
   const lines = String(raw || '')
     .split('\n')
@@ -295,13 +575,41 @@ function parseLongQuestions(raw) {
   return lines.map((line) => ({ text: line }));
 }
 
+function assessmentAnswersMarkup(attempt) {
+  const answers = Array.isArray(attempt?.answers) ? attempt.answers : [];
+  if (!answers.length) return '<span class="muted">-</span>';
+
+  if (attempt.type !== 'short' && attempt.type !== 'long') {
+    return '<span class="muted">Auto-graded</span>';
+  }
+
+  return `
+    <details class="assessment-details">
+      <summary>View answers (${answers.length})</summary>
+      <div class="assessment-answer-list">
+        ${answers
+          .map(
+            (item, index) => `
+              <article class="assessment-answer-item">
+                <p><strong>Q${index + 1}:</strong> ${escapeHtml(item.questionText || '')}</p>
+                <p class="muted"><strong>Answer:</strong> ${escapeHtml(item.answerText || '(No answer)')}</p>
+              </article>
+            `
+          )
+          .join('')}
+      </div>
+    </details>
+  `;
+}
+
+
 async function resolveApiBase() {
   if (state.apiResolved) return state.apiBase;
 
   try {
     const sameOriginBase = `${window.location.origin}/api`;
     const response = await fetch(`${sameOriginBase}/health`, { method: 'GET' });
-    if (response.ok) {
+    if (response.ok || response.status === 401 || response.status === 403) {
       state.apiBase = sameOriginBase;
       state.apiResolved = true;
       return state.apiBase;
@@ -347,11 +655,25 @@ async function api(path, options = {}) {
     headers
   });
 
-  let payload;
-  try {
-    payload = await response.json();
-  } catch (error) {
-    payload = { success: false, message: 'Invalid server response.' };
+  let payload = null;
+  const contentType = String(response.headers.get('content-type') || '');
+  if (contentType.includes('application/json')) {
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = { success: false, message: 'Invalid server response.' };
+    }
+  } else {
+    const text = await response.text();
+    if (/Authentication Required|Vercel Authentication/i.test(text)) {
+      payload = {
+        success: false,
+        message:
+          'This preview deployment is protected by Vercel login. Use the production URL or disable preview protection.'
+      };
+    } else {
+      payload = { success: false, message: 'Invalid server response.' };
+    }
   }
 
   if (!response.ok || payload.success === false) {
@@ -359,13 +681,6 @@ async function api(path, options = {}) {
   }
 
   return payload;
-}
-
-async function markAllNotificationsRead(rolePath) {
-  await api(`/${rolePath}/notifications/read`, {
-    method: 'POST',
-    body: JSON.stringify({})
-  });
 }
 
 function logout() {
@@ -407,22 +722,27 @@ function bindAccountPasswordForm() {
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const status = document.getElementById('changePasswordStatus');
+    const submitBtn = form.querySelector('button[type="submit"]');
     status.textContent = 'Updating password...';
 
-    try {
-      const currentPassword = document.getElementById('currentPassword').value;
-      const newPassword = document.getElementById('newPassword').value;
+    await withButtonLoading(submitBtn, 'Updating...', async () => {
+      try {
+        const currentPassword = document.getElementById('currentPassword').value;
+        const newPassword = document.getElementById('newPassword').value;
 
-      await api('/auth/change-password', {
-        method: 'POST',
-        body: JSON.stringify({ currentPassword, newPassword })
-      });
+        await api('/auth/change-password', {
+          method: 'POST',
+          body: JSON.stringify({ currentPassword, newPassword })
+        });
 
-      status.textContent = 'Password changed successfully.';
-      form.reset();
-    } catch (error) {
-      status.textContent = error.message;
-    }
+        status.textContent = 'Password changed successfully.';
+        showToast('Password updated successfully.', 'success');
+        form.reset();
+      } catch (error) {
+        status.textContent = error.message;
+        showToast(error.message, 'error');
+      }
+    });
   });
 }
 
@@ -443,9 +763,9 @@ function renderWelcome() {
         <p class="hero-tagline">Your all-in-one platform for daily tests, study guides and seamless teacher-student collaboration</p>
 
         <div class="hero-actions">
-          <button class="hero-btn student" id="studentSignInBtn">I'm a Student</button>
-          <button class="hero-btn teacher" id="teacherSignInBtn">I'm a Teacher</button>
           <button class="hero-btn admin" id="adminSignInBtn">I'm an Admin</button>
+          <button class="hero-btn teacher" id="teacherSignInBtn">I'm a Teacher</button>
+          <button class="hero-btn student" id="studentSignInBtn">I'm a Student</button>
         </div>
       </div>
 
@@ -460,6 +780,7 @@ function renderWelcome() {
 
 function renderLogin(role) {
   clearAttemptTimer();
+  const loginHint = getLoginHint(role);
 
   const titleMap = {
     admin: 'Institution Admin Sign In',
@@ -479,20 +800,20 @@ function renderLogin(role) {
 
           <form id="loginForm" class="auth-form">
             <label for="institutionId">Institution ID</label>
-            <input id="institutionId" type="text" required />
+            <input id="institutionId" type="text" value="${escapeHtml(loginHint.institutionId)}" required />
 
             <label for="username">Username</label>
-            <input id="username" type="text" required />
+            <input id="username" type="text" value="${escapeHtml(loginHint.username)}" required />
 
             <label for="password">Password</label>
             <input id="password" type="password" required />
 
+            <label class="remember-row" for="rememberMe">
+              <input id="rememberMe" type="checkbox" ${state.authRememberMe ? 'checked' : ''} />
+              Remember me on this browser
+            </label>
+
             <button type="submit" class="cta-main auth-submit">Sign In</button>
-            ${
-              role === 'student'
-                ? '<button type="button" class="set-password-btn" id="firstTimeSetPasswordBtn">First time? Set Password</button>'
-                : ''
-            }
             <button type="button" class="back-link-btn" id="backBtn">Back</button>
           </form>
 
@@ -506,139 +827,55 @@ function renderLogin(role) {
   document.getElementById('loginForm').addEventListener('submit', async (event) => {
     event.preventDefault();
     const status = document.getElementById('loginStatus');
+    const submitBtn = document.querySelector('#loginForm button[type="submit"]');
     status.textContent = 'Signing in...';
 
-    try {
-      const institutionId = document.getElementById('institutionId').value.trim();
-      const username = document.getElementById('username').value.trim();
-      const password = document.getElementById('password').value;
-
-      const result = await api('/auth/login', {
-        method: 'POST',
-        body: JSON.stringify({ institutionId, username, password })
-      });
-
-      if (result.data.user.role !== role) {
-        status.textContent = `This account is ${roleLabel(result.data.user.role)}. Use correct login.`;
-        return;
-      }
-
-      saveSession({
-        token: result.data.token,
-        user: result.data.user,
-        institutionId
-      });
-
-      if (role === 'student' && result.data.user.mustChangePassword) {
-        status.textContent = 'First-time account detected. Click “First time? Set Password”.';
-        return;
-      }
-
-      await renderByRole();
-    } catch (error) {
-      status.textContent = error.message;
-    }
-  });
-
-  document.getElementById('backBtn').addEventListener('click', renderWelcome);
-
-  if (role === 'student') {
-    document
-      .getElementById('firstTimeSetPasswordBtn')
-      .addEventListener('click', renderStudentFirstTimePassword);
-  }
-}
-
-function renderStudentFirstTimePassword() {
-  clearAttemptTimer();
-
-  app.innerHTML = `
-    <section class="welcome-page live-welcome">
-      <div class="hero-overlay"></div>
-      <div class="hero-content">
-        <header class="hero-header">${logoMarkup()}</header>
-
-        <div class="auth-card live-auth-card">
-          <h2 class="auth-title">Set Student Password</h2>
-          <p class="auth-subtitle">Use temporary password shared by your teacher.</p>
-
-          <form id="firstTimePasswordForm" class="auth-form">
-            <label for="institutionId">Institution ID</label>
-            <input id="institutionId" type="text" required />
-
-            <label for="username">Username</label>
-            <input id="username" type="text" required />
-
-            <label for="temporaryPassword">Temporary Password</label>
-            <input id="temporaryPassword" type="password" required />
-
-            <label for="newPassword">New Password</label>
-            <input id="newPassword" type="password" minlength="6" required />
-
-            <label for="confirmPassword">Confirm New Password</label>
-            <input id="confirmPassword" type="password" minlength="6" required />
-
-            <button class="cta-main auth-submit" type="submit">Save Password</button>
-            <button class="back-link-btn" id="backToStudentLoginBtn" type="button">Back to Student Login</button>
-          </form>
-
-          <p class="auth-note" id="firstTimeStatus"></p>
-        </div>
-      </div>
-      <footer class="hero-footer">Developed by LIFT Educations</footer>
-    </section>
-  `;
-
-  document
-    .getElementById('firstTimePasswordForm')
-    .addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const status = document.getElementById('firstTimeStatus');
-      status.textContent = 'Saving password...';
-
+    await withButtonLoading(submitBtn, 'Signing In...', async () => {
       try {
         const institutionId = document.getElementById('institutionId').value.trim();
         const username = document.getElementById('username').value.trim();
-        const temporaryPassword = document.getElementById('temporaryPassword').value;
-        const newPassword = document.getElementById('newPassword').value;
-        const confirmPassword = document.getElementById('confirmPassword').value;
+        const password = document.getElementById('password').value;
+        const rememberLogin = document.getElementById('rememberMe')?.checked ?? true;
 
-        if (newPassword !== confirmPassword) {
-          status.textContent = 'Passwords do not match.';
+        const result = await api('/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ institutionId, username, password })
+        });
+
+        if (result.data.user.role !== role) {
+          status.textContent = `This account is ${roleLabel(result.data.user.role)}. Use correct login.`;
+          showToast(status.textContent, 'error');
           return;
         }
 
-        await api('/auth/set-password-first-time', {
-          method: 'POST',
-          body: JSON.stringify({
-            institutionId,
-            username,
-            temporaryPassword,
-            newPassword
-          })
-        });
+        saveSession({
+          token: result.data.token,
+          user: result.data.user,
+          institutionId
+        }, rememberLogin);
+        updateLoginHint(role, institutionId, username, rememberLogin);
 
-        status.textContent = 'Password updated. Login now.';
+        showToast('Signed in successfully.', 'success', 1800);
+        await renderByRole();
       } catch (error) {
         status.textContent = error.message;
+        showToast(error.message, 'error');
       }
     });
+  });
 
-  document
-    .getElementById('backToStudentLoginBtn')
-    .addEventListener('click', () => renderLogin('student'));
+  document.getElementById('backBtn').addEventListener('click', renderWelcome);
 }
 
 async function renderAdminDashboard() {
   clearAttemptTimer();
 
-  const [meData, summaryResult, teachersResult, subjectsResult, notificationsResult] =
+  const [meData, summaryResult, teachersResult, subjectsResult] =
     await Promise.all([
       fetchMe(),
       api('/admin/summary'),
       api('/admin/teachers'),
-      api('/admin/subjects'),
-      api('/admin/notifications')
+      api('/admin/subjects')
     ]);
 
   const studentsQuery = toQueryString({
@@ -647,22 +884,12 @@ async function renderAdminDashboard() {
   });
   const studentsResult = await api(`/admin/students${studentsQuery}`);
 
-  let messageUsers = [];
-  let messageFeed = [];
-  if (state.adminTab === 'messages') {
-    const usersResult = await api('/admin/users');
-    messageUsers = usersResult.data.users || [];
-
-    if (!state.adminMessageUserId && messageUsers.length) {
-      state.adminMessageUserId = messageUsers[0]._id;
-    }
-
-    if (state.adminMessageUserId) {
-      const conversationResult = await api(
-        `/admin/messages${toQueryString({ userId: state.adminMessageUserId })}`
-      );
-      messageFeed = conversationResult.data.messages || [];
-    }
+  let analytics = null;
+  if (state.adminTab === 'analytics') {
+    const analyticsResult = await api(
+      `/admin/analytics${toQueryString({ days: state.adminAnalyticsWindow })}`
+    );
+    analytics = analyticsResult.data.analytics || null;
   }
 
   const user = meData.user;
@@ -670,8 +897,6 @@ async function renderAdminDashboard() {
   const teachers = teachersResult.data.teachers || [];
   const students = studentsResult.data.students || [];
   const subjects = subjectsResult.data.subjects || [];
-  const notifications = notificationsResult.data.notifications || [];
-  const unreadCount = notifications.filter((item) => !item.read).length;
 
   app.innerHTML = `
     <div class="dashboard-shell">
@@ -681,9 +906,9 @@ async function renderAdminDashboard() {
           ${navButtonsMarkup(
             [
               { value: 'dashboard', label: 'Dashboard' },
+              { value: 'analytics', label: 'Analytics' },
               { value: 'teachers', label: 'Teachers' },
               { value: 'students', label: 'Students' },
-              { value: 'messages', label: 'Messages' },
               { value: 'accounts', label: 'Accounts' }
             ],
             state.adminTab,
@@ -697,15 +922,6 @@ async function renderAdminDashboard() {
         <h2>Welcome, ${escapeHtml(user.fullName)} 👋</h2>
         <p class="subline">Institution ID: ${escapeHtml(meData.institution?.institutionId || state.session.institutionId)}</p>
 
-        <section class="panel">
-          <div class="progress-row">
-            <h3>Notifications</h3>
-            <strong>${unreadCount} unread</strong>
-          </div>
-          ${notificationsMarkup(notifications)}
-          <button id="adminMarkNotificationsBtn" class="cta-soft">Mark all read</button>
-        </section>
-
         ${
           state.adminTab === 'dashboard'
             ? `
@@ -714,6 +930,47 @@ async function renderAdminDashboard() {
                 <article class="panel stat"><h3>${summary.studentCount}</h3><p>Total Students</p></article>
                 <article class="panel stat"><h3>${summary.subjectCount}</h3><p>Total Subjects</p></article>
                 <article class="panel stat"><h3>${teachers.length ? Math.round((summary.studentCount / teachers.length) * 10) / 10 : 0}</h3><p>Students / Teacher</p></article>
+              </section>
+            `
+            : ''
+        }
+
+        ${
+          state.adminTab === 'analytics'
+            ? `
+              <section class="panel">
+                <div class="progress-row">
+                  <h3>Role Funnel Analytics</h3>
+                  <select id="adminAnalyticsWindow">
+                    <option value="7" ${state.adminAnalyticsWindow === '7' ? 'selected' : ''}>7 days</option>
+                    <option value="30" ${state.adminAnalyticsWindow === '30' ? 'selected' : ''}>30 days</option>
+                    <option value="90" ${state.adminAnalyticsWindow === '90' ? 'selected' : ''}>90 days</option>
+                  </select>
+                </div>
+                <p class="muted">Track activation, retention and drop-off by role.</p>
+              </section>
+
+              <section class="stats-grid">
+                ${funnelCardMarkup('Admin', analytics?.roleFunnels?.admin)}
+                ${funnelCardMarkup('Teacher', analytics?.roleFunnels?.teacher)}
+                ${funnelCardMarkup('Student', analytics?.roleFunnels?.student)}
+              </section>
+
+              <section class="panel">
+                <h3>Top Activity Events</h3>
+                <div class="stack">
+                  ${
+                    (analytics?.eventsByType || []).length
+                      ? (analytics?.eventsByType || [])
+                          .slice(0, 10)
+                          .map(
+                            (item) =>
+                              `<p class="stack-item"><strong>${escapeHtml(item.eventType)}:</strong> ${escapeHtml(item.count)}</p>`
+                          )
+                          .join('')
+                      : '<p class="muted">No events found for this period.</p>'
+                  }
+                </div>
               </section>
             `
             : ''
@@ -752,14 +1009,19 @@ async function renderAdminDashboard() {
 
               <section class="panel table-panel">
                 <h3>Teacher Accounts</h3>
+                <p class="muted">Share links are available for accounts created in this admin session.</p>
+                <button id="exportTeacherCredsCsvBtn" class="cta-soft">Export Teacher Credentials CSV</button>
                 <div class="table-wrap">
                   <table>
                     <thead>
                       <tr>
                         <th>Name</th>
                         <th>Username</th>
+                        <th>Temp Password</th>
                         <th>Email</th>
                         <th>Phone</th>
+                        <th>Share</th>
+                        <th>Action</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -767,17 +1029,40 @@ async function renderAdminDashboard() {
                         teachers.length
                           ? teachers
                               .map(
-                                (teacher) => `
+                                (teacher) => {
+                                  const tempPassword =
+                                    state.adminTeacherSecrets[teacher.username] || '';
+                                  const shareMessage = encodeURIComponent(
+                                    `LIFT Educations login\nInstitution ID: ${state.session.institutionId}\nUsername: ${teacher.username}\nTemporary Password: ${tempPassword}`
+                                  );
+                                  const whatsPhone = cleanPhone(teacher.phone);
+
+                                  return `
                                   <tr>
                                     <td>${escapeHtml(teacher.fullName)}</td>
                                     <td>${escapeHtml(teacher.username)}</td>
+                                    <td>${tempPassword ? escapeHtml(tempPassword) : '<span class="muted">not available</span>'}</td>
                                     <td>${escapeHtml(teacher.email || '-')}</td>
                                     <td>${escapeHtml(teacher.phone || '-')}</td>
+                                    <td>
+                                      ${
+                                        tempPassword && whatsPhone
+                                          ? `<a href="https://wa.me/${whatsPhone}?text=${shareMessage}" target="_blank" rel="noreferrer">WhatsApp</a>`
+                                          : '-'
+                                      }
+                                      ${
+                                        tempPassword
+                                          ? ` | <button class="mini-btn" data-copy-teacher-creds="${teacher.username}">Copy</button>`
+                                          : ''
+                                      }
+                                    </td>
+                                    <td><button class="mini-btn danger" data-delete-teacher="${teacher._id}">Delete</button></td>
                                   </tr>
-                                `
+                                `;
+                                }
                               )
                               .join('')
-                          : '<tr><td colspan="4">No teachers yet.</td></tr>'
+                          : '<tr><td colspan="7">No teachers yet.</td></tr>'
                       }
                     </tbody>
                   </table>
@@ -852,37 +1137,6 @@ async function renderAdminDashboard() {
             : ''
         }
 
-        ${
-          state.adminTab === 'messages'
-            ? `
-              <section class="panel">
-                <h3>Message Users</h3>
-                <label for="adminMessageUserId">Choose Recipient</label>
-                <select id="adminMessageUserId">
-                  ${messageUsers
-                    .map(
-                      (item) =>
-                        `<option value="${item._id}" ${
-                          state.adminMessageUserId === item._id ? 'selected' : ''
-                        }>${escapeHtml(item.fullName)} (${escapeHtml(item.role)})</option>`
-                    )
-                    .join('')}
-                </select>
-
-                <label for="adminMessageText">Message</label>
-                <textarea id="adminMessageText" rows="4" placeholder="Type message for selected user"></textarea>
-                <button id="adminSendMessageBtn" class="cta-main">Send Message</button>
-                <p class="auth-note" id="adminMessageStatus"></p>
-              </section>
-
-              <section class="panel">
-                <h3>Conversation</h3>
-                ${messageFeedMarkup(messageFeed, user.id)}
-              </section>
-            `
-            : ''
-        }
-
         ${state.adminTab === 'accounts' ? accountSectionMarkup(user) : ''}
       </main>
     </div>
@@ -895,48 +1149,82 @@ async function renderAdminDashboard() {
 
   document.getElementById('logoutBtn').addEventListener('click', logout);
 
-  document.getElementById('adminMarkNotificationsBtn').addEventListener('click', async () => {
-    try {
-      await markAllNotificationsRead('admin');
+  const analyticsWindow = document.getElementById('adminAnalyticsWindow');
+  if (analyticsWindow) {
+    analyticsWindow.addEventListener('change', (event) => {
+      state.adminAnalyticsWindow = event.target.value || '30';
       void renderAdminDashboard();
-    } catch (error) {
-      alert(error.message);
-    }
-  });
+    });
+  }
 
   const createTeacherBtn = document.getElementById('createTeacherBtn');
   if (createTeacherBtn) {
     createTeacherBtn.addEventListener('click', async () => {
       const status = document.getElementById('createTeacherStatus');
+      const form = document.getElementById('createTeacherForm');
+      if (form && !form.reportValidity()) return;
       status.textContent = 'Creating teacher...';
 
-      try {
-        const payload = {
-          fullName: document.getElementById('teacherFullName').value.trim(),
-          username: document.getElementById('teacherUsername').value.trim(),
-          password: document.getElementById('teacherPassword').value,
-          email: document.getElementById('teacherEmail').value.trim(),
-          phone: document.getElementById('teacherPhone').value.trim()
-        };
+      await withButtonLoading(createTeacherBtn, 'Creating...', async () => {
+        try {
+          const fullName = document.getElementById('teacherFullName').value.trim();
+          const username = document.getElementById('teacherUsername').value.trim();
+          const password = document.getElementById('teacherPassword').value;
+          const email = document.getElementById('teacherEmail').value.trim();
+          const phone = document.getElementById('teacherPhone').value.trim();
 
-        await api('/admin/teachers', {
-          method: 'POST',
-          body: JSON.stringify(payload)
-        });
+          if (fullName.length < 2) {
+            status.textContent = 'Full name must be at least 2 characters.';
+            showToast(status.textContent, 'error');
+            return;
+          }
+          if (username.length < 3) {
+            status.textContent = 'Username must be at least 3 characters.';
+            showToast(status.textContent, 'error');
+            return;
+          }
+          if (password.length < 6) {
+            status.textContent = 'Password must be at least 6 characters.';
+            showToast(status.textContent, 'error');
+            return;
+          }
 
-        status.textContent = 'Teacher account created.';
-        void renderAdminDashboard();
-      } catch (error) {
-        status.textContent = error.message;
-      }
+          const payload = {
+            fullName,
+            username,
+            password,
+            email,
+            phone
+          };
+
+          const result = await api('/admin/teachers', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+          });
+
+          if (result.data?.teacher?.username) {
+            state.adminTeacherSecrets[result.data.teacher.username] = payload.password;
+          }
+
+          status.textContent = 'Teacher account created.';
+          showToast('Teacher account created successfully.', 'success');
+          void renderAdminDashboard();
+        } catch (error) {
+          status.textContent = error.message;
+          showToast(error.message, 'error');
+        }
+      });
     });
   }
 
   const searchInput = document.getElementById('adminStudentSearch');
   if (searchInput) {
     searchInput.addEventListener('input', (event) => {
-      state.adminStudentQuery = event.target.value;
-      void renderAdminDashboard();
+      const nextValue = event.target.value;
+      debounceByKey('admin-student-search', () => {
+        state.adminStudentQuery = nextValue;
+        void renderAdminDashboard();
+      });
     });
   }
 
@@ -948,39 +1236,75 @@ async function renderAdminDashboard() {
     });
   }
 
-  const recipientSelect = document.getElementById('adminMessageUserId');
-  if (recipientSelect) {
-    recipientSelect.addEventListener('change', (event) => {
-      state.adminMessageUserId = event.target.value;
-      void renderAdminDashboard();
-    });
-  }
-
-  const adminSendMessageBtn = document.getElementById('adminSendMessageBtn');
-  if (adminSendMessageBtn) {
-    adminSendMessageBtn.addEventListener('click', async () => {
-      const status = document.getElementById('adminMessageStatus');
-      status.textContent = 'Sending...';
-
-      try {
-        const toUserId = document.getElementById('adminMessageUserId').value;
-        const text = document.getElementById('adminMessageText').value.trim();
-        if (!toUserId || !text) {
-          status.textContent = 'Choose recipient and type message.';
-          return;
-        }
-
-        await api('/admin/messages', {
-          method: 'POST',
-          body: JSON.stringify({ toUserId, text })
-        });
-
-        status.textContent = 'Message sent.';
-        document.getElementById('adminMessageText').value = '';
-        void renderAdminDashboard();
-      } catch (error) {
-        status.textContent = error.message;
+  document.querySelectorAll('[data-copy-teacher-creds]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const username = button.getAttribute('data-copy-teacher-creds');
+      if (!username) return;
+      const tempPassword = state.adminTeacherSecrets[username];
+      if (!tempPassword) {
+        showToast('Temporary password not available for this teacher in current session.', 'error');
+        return;
       }
+      const copyText = [
+        'LIFT Educations login',
+        `Institution ID: ${state.session.institutionId}`,
+        `Username: ${username}`,
+        `Temporary Password: ${tempPassword}`
+      ].join('\n');
+      try {
+        await copyTextToClipboard(copyText);
+        showToast('Teacher credentials copied.', 'success');
+      } catch (error) {
+        showToast('Could not copy. Please copy manually.', 'error');
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-delete-teacher]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const teacherId = button.getAttribute('data-delete-teacher');
+      if (!teacherId) return;
+      if (!confirm('Delete this teacher account? This teacher will no longer be able to login.')) {
+        return;
+      }
+
+      await withButtonLoading(button, 'Deleting...', async () => {
+        try {
+          await api(`/admin/teachers/${teacherId}`, { method: 'DELETE' });
+          showToast('Teacher deleted.', 'success');
+          void renderAdminDashboard();
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  });
+
+  const exportTeacherCredsCsvBtn = document.getElementById('exportTeacherCredsCsvBtn');
+  if (exportTeacherCredsCsvBtn) {
+    exportTeacherCredsCsvBtn.addEventListener('click', () => {
+      const rows = teachers
+        .map((teacher) => ({
+          fullName: teacher.fullName || '',
+          username: teacher.username || '',
+          tempPassword: state.adminTeacherSecrets[teacher.username] || '',
+          email: teacher.email || '',
+          phone: teacher.phone || '',
+          institutionId: state.session.institutionId
+        }))
+        .filter((row) => row.tempPassword);
+
+      if (!rows.length) {
+        showToast('No temporary passwords available in this session to export.', 'error');
+        return;
+      }
+
+      downloadCsv(
+        'teacher-credentials.csv',
+        ['institutionId', 'fullName', 'username', 'tempPassword', 'email', 'phone'],
+        rows
+      );
+      showToast('Teacher credentials CSV exported.', 'success');
     });
   }
 
@@ -990,10 +1314,9 @@ async function renderAdminDashboard() {
 async function renderTeacherDashboard() {
   clearAttemptTimer();
 
-  const [meData, subjectsResult, notificationsResult] = await Promise.all([
+  const [meData, subjectsResult] = await Promise.all([
     fetchMe(),
-    api('/teacher/subjects'),
-    api('/teacher/notifications')
+    api('/teacher/subjects')
   ]);
 
   const subjects = subjectsResult.data.subjects || [];
@@ -1009,27 +1332,49 @@ async function renderTeacherDashboard() {
   if (state.teacherTestSubjectId && !subjects.some((item) => item._id === state.teacherTestSubjectId)) {
     state.teacherTestSubjectId = '';
   }
-
+  if (
+    state.teacherAssessmentSubjectId &&
+    !subjects.some((item) => item._id === state.teacherAssessmentSubjectId)
+  ) {
+    state.teacherAssessmentSubjectId = '';
+  }
   const studentQuery = toQueryString({
-    q: state.teacherStudentQuery,
-    subjectId: state.teacherSubjectFilter
+    q: state.teacherTab === 'students' ? state.teacherStudentQuery : '',
+    subjectId: state.teacherTab === 'students' ? state.teacherSubjectFilter : ''
   });
   const studentsResult = await api(`/teacher/students${studentQuery}`);
   const students = studentsResult.data.students || [];
+  const availableStudentsForTest = state.teacherTestSubjectId
+    ? students.filter((student) =>
+        (student.subjects || []).some((item) => item.id === state.teacherTestSubjectId)
+      )
+    : [];
+
+  if (state.teacherTestAudienceMode !== 'all' && state.teacherTestAudienceMode !== 'selected') {
+    state.teacherTestAudienceMode = 'all';
+  }
+
+  const allowedTestStudentIds = new Set(availableStudentsForTest.map((student) => student._id));
+  state.teacherTestSelectedStudentIds = (state.teacherTestSelectedStudentIds || []).filter((studentId) =>
+    allowedTestStudentIds.has(studentId)
+  );
 
   let resources = [];
-  if (state.teacherTab === 'resources') {
-    const resourcesQuery = toQueryString({
-      subjectId: state.teacherResourceSubjectId,
-      resourceType: state.teacherResourceType,
-      q: state.teacherResourceSearch
-    });
+  if (state.teacherTab === 'resources' || state.teacherTab === 'dashboard') {
+    const resourcesQuery =
+      state.teacherTab === 'resources'
+        ? toQueryString({
+            subjectId: state.teacherResourceSubjectId,
+            resourceType: state.teacherResourceType,
+            q: state.teacherResourceSearch
+          })
+        : '';
     const resourceResult = await api(`/teacher/resources${resourcesQuery}`);
     resources = resourceResult.data.resources || [];
   }
 
   let tests = [];
-  if (state.teacherTab === 'tests') {
+  if (state.teacherTab === 'tests' || state.teacherTab === 'dashboard') {
     const testsQuery = toQueryString({
       subjectId: state.teacherTestSubjectId
     });
@@ -1037,23 +1382,36 @@ async function renderTeacherDashboard() {
     tests = testsResult.data.tests || [];
   }
 
-  let conversation = [];
-  if (state.teacherTab === 'messages') {
-    if (!state.teacherMessageStudentId && students.length) {
-      state.teacherMessageStudentId = students[0]._id;
-    }
+  let dashboardClassPlans = [];
+  if (state.teacherTab === 'dashboard') {
+    const dashboardPlansResult = await api(
+      `/teacher/class-plans${toQueryString({ date: todayIsoDate() })}`
+    );
+    dashboardClassPlans = dashboardPlansResult.data.plans || [];
+  }
 
-    if (state.teacherMessageStudentId) {
-      const conversationResult = await api(
-        `/teacher/messages${toQueryString({ studentId: state.teacherMessageStudentId })}`
-      );
-      conversation = conversationResult.data.messages || [];
-    }
+  let classPlans = [];
+  if (state.teacherTab === 'class_planner') {
+    const classPlansResult = await api(
+      `/teacher/class-plans${toQueryString({ date: state.teacherClassPlanDate || todayIsoDate() })}`
+    );
+    classPlans = classPlansResult.data.plans || [];
+  }
+
+  let assessments = [];
+  if (state.teacherTab === 'assessment') {
+    const assessmentResult = await api(
+      `/teacher/assessments${toQueryString({
+        subjectId: state.teacherAssessmentSubjectId,
+        type: state.teacherAssessmentType,
+        status: state.teacherAssessmentStatus,
+        q: state.teacherAssessmentQuery
+      })}`
+    );
+    assessments = assessmentResult.data.assessments || [];
   }
 
   const user = meData.user;
-  const notifications = notificationsResult.data.notifications || [];
-  const unreadCount = notifications.filter((item) => !item.read).length;
 
   app.innerHTML = `
     <div class="dashboard-shell">
@@ -1065,9 +1423,10 @@ async function renderTeacherDashboard() {
               { value: 'dashboard', label: 'Dashboard' },
               { value: 'subjects', label: 'Subjects' },
               { value: 'students', label: 'Students' },
+              { value: 'class_planner', label: 'Class Planner' },
               { value: 'resources', label: 'Upload Resources' },
               { value: 'tests', label: 'Conduct Test' },
-              { value: 'messages', label: 'Messages' },
+              { value: 'assessment', label: 'Assessment' },
               { value: 'accounts', label: 'Accounts' }
             ],
             state.teacherTab,
@@ -1079,16 +1438,7 @@ async function renderTeacherDashboard() {
 
       <main class="page container-xl">
         <h2>Welcome, ${escapeHtml(user.fullName)} 👋</h2>
-        <p class="subline">Manage subjects, students, tests and resources from one place.</p>
-
-        <section class="panel">
-          <div class="progress-row">
-            <h3>Notifications</h3>
-            <strong>${unreadCount} unread</strong>
-          </div>
-          ${notificationsMarkup(notifications)}
-          <button id="teacherMarkNotificationsBtn" class="cta-soft">Mark all read</button>
-        </section>
+        <p class="subline">Manage classes, subjects, students and tests from one place.</p>
 
         ${
           state.teacherTab === 'dashboard'
@@ -1096,8 +1446,32 @@ async function renderTeacherDashboard() {
               <section class="stats-grid">
                 <article class="panel stat"><h3>${subjects.length}</h3><p>Subjects</p></article>
                 <article class="panel stat"><h3>${students.length}</h3><p>Students</p></article>
-                <article class="panel stat"><h3>${students.filter((item) => item.mustChangePassword).length}</h3><p>Pending Password Setup</p></article>
-                <article class="panel stat"><h3>${students.filter((item) => item.email).length}</h3><p>Students with Email</p></article>
+                <article class="panel stat"><h3>${resources.length}</h3><p>Resources</p></article>
+                <article class="panel stat"><h3>${tests.length}</h3><p>Published Tests</p></article>
+              </section>
+
+              <section class="panel">
+                <div class="progress-row">
+                  <h3>Today’s Class Schedule</h3>
+                  <button class="mini-btn" data-teacher-tab="class_planner">Open Planner</button>
+                </div>
+                ${
+                  dashboardClassPlans.length
+                    ? dashboardClassPlans
+                        .slice(0, 6)
+                        .map(
+                          (plan) => `
+                            <article class="stack-item pending-item">
+                              <div>
+                                <p><strong>${escapeHtml(plan.title)}</strong></p>
+                                <p class="muted">${escapeHtml(plan.subjectName || '-')} | ${escapeHtml(plan.startTime || '--:--')} - ${escapeHtml(plan.endTime || '--:--')}</p>
+                              </div>
+                            </article>
+                          `
+                        )
+                        .join('')
+                    : '<p class="muted">No classes planned for today.</p>'
+                }
               </section>
             `
             : ''
@@ -1114,12 +1488,8 @@ async function renderTeacherDashboard() {
                     <input id="subjectName" type="text" required />
                   </div>
                   <div>
-                    <label for="syllabusPdfUrl">Syllabus PDF URL</label>
-                    <input id="syllabusPdfUrl" type="url" placeholder="https://...pdf" required />
-                  </div>
-                  <div>
-                    <label for="syllabusPdfName">Syllabus File Name</label>
-                    <input id="syllabusPdfName" type="text" />
+                    <label for="syllabusPdfFile">Syllabus PDF File</label>
+                    <input id="syllabusPdfFile" type="file" accept=".pdf,application/pdf" required />
                   </div>
                 </form>
                 <button id="createSubjectBtn" class="cta-main">Create Subject</button>
@@ -1148,11 +1518,14 @@ async function renderTeacherDashboard() {
                                     <td>${escapeHtml(subject.name)}</td>
                                     <td>${
                                       subject.syllabusPdfUrl
-                                        ? `<a href="${escapeHtml(subject.syllabusPdfUrl)}" target="_blank" rel="noreferrer">View PDF</a>`
+                                        ? `<a href="${escapeHtml(subject.syllabusPdfUrl)}" target="_blank" rel="noreferrer">Open Syllabus</a>`
                                         : '-'
                                     }</td>
                                     <td>${formatDate(subject.createdAt)}</td>
-                                    <td><button class="mini-btn danger" data-delete-subject="${subject._id}">Delete</button></td>
+                                    <td>
+                                      <button class="mini-btn" data-update-syllabus="${subject._id}">Upload New Syllabus</button>
+                                      <button class="mini-btn danger" data-delete-subject="${subject._id}">Delete</button>
+                                    </td>
                                   </tr>
                                 `
                               )
@@ -1162,6 +1535,8 @@ async function renderTeacherDashboard() {
                     </tbody>
                   </table>
                 </div>
+                <input id="updateSyllabusFileInput" type="file" accept=".pdf,application/pdf" hidden />
+                <p class="auth-note" id="updateSyllabusStatus"></p>
               </section>
             `
             : ''
@@ -1192,6 +1567,14 @@ async function renderTeacherDashboard() {
                   <div>
                     <label for="studentPhone">Phone</label>
                     <input id="studentPhone" type="text" />
+                  </div>
+                  <div>
+                    <label for="studentParentEmail">Parent Email (optional)</label>
+                    <input id="studentParentEmail" type="email" />
+                  </div>
+                  <div>
+                    <label for="studentParentPhone">Parent WhatsApp (optional)</label>
+                    <input id="studentParentPhone" type="text" />
                   </div>
                   <div>
                     <label for="studentSubjects">Assign Subjects</label>
@@ -1237,6 +1620,7 @@ async function renderTeacherDashboard() {
                       <tr>
                         <th>Name</th>
                         <th>Username</th>
+                        <th>Temp Password</th>
                         <th>Email</th>
                         <th>Phone</th>
                         <th>Subjects</th>
@@ -1250,8 +1634,12 @@ async function renderTeacherDashboard() {
                           ? students
                               .map((student) => {
                                 const whatsPhone = cleanPhone(student.phone);
+                                const tempPassword =
+                                  state.teacherStudentSecrets[student.username] || '';
                                 const shareText = encodeURIComponent(
-                                  `LIFT Educations login\nInstitution ID: ${state.session.institutionId}\nUsername: ${student.username}`
+                                  `LIFT Educations login\nInstitution ID: ${state.session.institutionId}\nUsername: ${student.username}${
+                                    tempPassword ? `\nTemporary Password: ${tempPassword}` : ''
+                                  }`
                                 );
                                 const subjectsText = (student.subjects || [])
                                   .map((item) => item.name)
@@ -1261,6 +1649,7 @@ async function renderTeacherDashboard() {
                                   <tr>
                                     <td>${escapeHtml(student.fullName)}</td>
                                     <td>${escapeHtml(student.username)}</td>
+                                    <td>${tempPassword ? escapeHtml(tempPassword) : '<span class="muted">not available</span>'}</td>
                                     <td>${escapeHtml(student.email || '-')}</td>
                                     <td>${escapeHtml(student.phone || '-')}</td>
                                     <td>${escapeHtml(subjectsText || '-')}</td>
@@ -1283,7 +1672,141 @@ async function renderTeacherDashboard() {
                                 `;
                               })
                               .join('')
-                          : '<tr><td colspan="7">No students found.</td></tr>'
+                          : '<tr><td colspan="8">No students found.</td></tr>'
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            `
+            : ''
+        }
+
+        ${
+          state.teacherTab === 'class_planner'
+            ? `
+              <section class="panel">
+                <h3>Plan Today’s Class</h3>
+                <form id="createClassPlanForm" class="two-grid-form">
+                  <div>
+                    <label for="classPlanSubjectId">Subject</label>
+                    <select id="classPlanSubjectId" required>
+                      <option value="">Select Subject</option>
+                      ${subjects.map((subject) => `<option value="${subject._id}">${escapeHtml(subject.name)}</option>`).join('')}
+                    </select>
+                  </div>
+                  <div>
+                    <label for="classPlanTitle">Class Title</label>
+                    <input id="classPlanTitle" type="text" required />
+                  </div>
+                  <div>
+                    <label for="classPlanScheduledDate">Date</label>
+                    <input id="classPlanScheduledDate" type="date" value="${escapeHtml(state.teacherClassPlanDate || todayIsoDate())}" required />
+                  </div>
+                  <div>
+                    <label for="classPlanStartTime">Start Time</label>
+                    <input id="classPlanStartTime" type="time" />
+                  </div>
+                  <div>
+                    <label for="classPlanEndTime">End Time</label>
+                    <input id="classPlanEndTime" type="time" />
+                  </div>
+                  <div>
+                    <label for="classPlanDescription">Class Notes (optional)</label>
+                    <input id="classPlanDescription" type="text" placeholder="What will be covered today" />
+                  </div>
+                </form>
+
+                <section class="builder-box">
+                  <h3>Attach Resource (optional)</h3>
+                  <div class="two-grid-form">
+                    <div>
+                      <label for="classPlanResourceType">Resource Type</label>
+                      <select id="classPlanResourceType">
+                        <option value="pdf" ${state.teacherClassPlanResourceType === 'pdf' ? 'selected' : ''}>PDF</option>
+                        <option value="ebook" ${state.teacherClassPlanResourceType === 'ebook' ? 'selected' : ''}>EBook</option>
+                        <option value="video" ${state.teacherClassPlanResourceType === 'video' ? 'selected' : ''}>Video</option>
+                        <option value="link" ${state.teacherClassPlanResourceType === 'link' ? 'selected' : ''}>Link</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label for="classPlanResourceTitle">Resource Title</label>
+                      <input id="classPlanResourceTitle" type="text" placeholder="Optional" />
+                    </div>
+                    <div>
+                      ${
+                        state.teacherClassPlanResourceType === 'pdf' ||
+                        state.teacherClassPlanResourceType === 'ebook'
+                          ? `
+                            <label for="classPlanResourceFile">Upload File</label>
+                            <input id="classPlanResourceFile" type="file" accept="${
+                              state.teacherClassPlanResourceType === 'pdf'
+                                ? '.pdf,application/pdf'
+                                : '.pdf,.epub,.mobi,.azw3,application/pdf'
+                            }" />
+                          `
+                          : `
+                            <label for="classPlanResourceValue">Resource URL</label>
+                            <input id="classPlanResourceValue" type="url" placeholder="https://..." />
+                          `
+                      }
+                    </div>
+                    <div>
+                      <label for="classPlanResourceKeywords">Keywords (optional)</label>
+                      <input id="classPlanResourceKeywords" type="text" placeholder="chapter, topic" />
+                    </div>
+                  </div>
+                </section>
+
+                <button id="createClassPlanBtn" class="cta-main">Save Class Plan</button>
+                <p class="auth-note" id="createClassPlanStatus"></p>
+              </section>
+
+              <section class="panel table-panel">
+                <div class="progress-row">
+                  <h3>Class Plan Schedule</h3>
+                  <input id="teacherClassPlanDate" type="date" value="${escapeHtml(state.teacherClassPlanDate || todayIsoDate())}" />
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>Subject</th>
+                        <th>Class</th>
+                        <th>Resource</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${
+                        classPlans.length
+                          ? classPlans
+                              .map(
+                                (plan) => `
+                                  <tr>
+                                    <td>${escapeHtml(plan.startTime || '--:--')} - ${escapeHtml(plan.endTime || '--:--')}</td>
+                                    <td>${escapeHtml(plan.subjectName || '-')}</td>
+                                    <td>
+                                      <strong>${escapeHtml(plan.title || '-')}</strong>
+                                      <br />
+                                      <small>${escapeHtml(plan.description || '')}</small>
+                                    </td>
+                                    <td>
+                                      ${
+                                        plan.resource
+                                          ? plan.resource.source === 'file'
+                                            ? `<a href="${escapeHtml(plan.resource.value)}" download="${escapeHtml(plan.resource.title || 'resource')}">Download</a>`
+                                            : `<a href="${escapeHtml(plan.resource.value)}" target="_blank" rel="noreferrer">Open</a>`
+                                          : '-'
+                                      }
+                                    </td>
+                                    <td><button class="mini-btn danger" data-delete-class-plan="${plan.id}">Delete</button></td>
+                                  </tr>
+                                `
+                              )
+                              .join('')
+                          : '<tr><td colspan="5">No classes planned for this date.</td></tr>'
                       }
                     </tbody>
                   </table>
@@ -1309,10 +1832,10 @@ async function renderTeacherDashboard() {
                   <div>
                     <label for="resourceType">Resource Type</label>
                     <select id="resourceType" required>
-                      <option value="pdf">PDF</option>
-                      <option value="ebook">EBook</option>
-                      <option value="video">Video</option>
-                      <option value="link">Link</option>
+                      <option value="pdf" ${state.teacherResourceCreateType === 'pdf' ? 'selected' : ''}>PDF</option>
+                      <option value="ebook" ${state.teacherResourceCreateType === 'ebook' ? 'selected' : ''}>EBook</option>
+                      <option value="video" ${state.teacherResourceCreateType === 'video' ? 'selected' : ''}>Video</option>
+                      <option value="link" ${state.teacherResourceCreateType === 'link' ? 'selected' : ''}>Link</option>
                     </select>
                   </div>
                   <div>
@@ -1320,8 +1843,26 @@ async function renderTeacherDashboard() {
                     <input id="resourceTitle" type="text" required />
                   </div>
                   <div>
-                    <label for="resourceValue">Resource URL / Text</label>
-                    <input id="resourceValue" type="text" required />
+                    ${
+                      state.teacherResourceCreateType === 'pdf' ||
+                      state.teacherResourceCreateType === 'ebook'
+                        ? `
+                          <label for="resourceFile">Upload File</label>
+                          <input id="resourceFile" type="file" accept="${
+                            state.teacherResourceCreateType === 'pdf'
+                              ? '.pdf,application/pdf'
+                              : '.pdf,.epub,.mobi,.azw3,application/pdf'
+                          }" required />
+                        `
+                        : `
+                          <label for="resourceValue">Resource URL</label>
+                          <input id="resourceValue" type="url" placeholder="${
+                            state.teacherResourceCreateType === 'video'
+                              ? 'https://www.youtube.com/watch?v=...'
+                              : 'https://...'
+                          }" required />
+                        `
+                    }
                   </div>
                   <div>
                     <label for="resourceKeywords">Keywords (comma separated)</label>
@@ -1374,7 +1915,7 @@ async function renderTeacherDashboard() {
                       <tr>
                         <th>Title</th>
                         <th>Type</th>
-                        <th>Link / Value</th>
+                        <th>Resource</th>
                         <th>Created</th>
                         <th>Action</th>
                       </tr>
@@ -1388,7 +1929,13 @@ async function renderTeacherDashboard() {
                                   <tr>
                                     <td>${escapeHtml(resource.title)}</td>
                                     <td>${escapeHtml(resource.resourceType.toUpperCase())}</td>
-                                    <td><a href="${escapeHtml(resource.value)}" target="_blank" rel="noreferrer">Open</a></td>
+                                    <td>
+                                      ${
+                                        resource.source === 'file'
+                                          ? `<a href="${escapeHtml(resource.value)}" download="${escapeHtml(resource.title || 'resource')}">Download</a>`
+                                          : `<a href="${escapeHtml(resource.value)}" target="_blank" rel="noreferrer">Open</a>`
+                                      }
+                                    </td>
                                     <td>${formatDate(resource.createdAt)}</td>
                                     <td><button class="mini-btn danger" data-delete-resource="${resource._id}">Delete</button></td>
                                   </tr>
@@ -1425,30 +1972,82 @@ async function renderTeacherDashboard() {
                   <div>
                     <label for="testType">Type</label>
                     <select id="testType">
-                      <option value="mcq" ${state.teacherTestType === 'mcq' ? 'selected' : ''}>MCQ (20 Questions)</option>
+                      <option value="mcq" ${state.teacherTestType === 'mcq' ? 'selected' : ''}>MCQ (20 Questions / 5 Minutes)</option>
+                      <option value="true_false" ${state.teacherTestType === 'true_false' ? 'selected' : ''}>True / False (20 Questions / 5 Minutes)</option>
                       <option value="long" ${state.teacherTestType === 'long' ? 'selected' : ''}>Long Format</option>
+                      <option value="short" ${state.teacherTestType === 'short' ? 'selected' : ''}>Short Answer</option>
                     </select>
                   </div>
                   <div>
-                    <label for="testDuration">Duration Minutes (Long only)</label>
+                    <label for="testDuration">Duration Minutes (Subjective only)</label>
                     <select id="testDuration">
+                      <option value="30">30</option>
                       <option value="60">60</option>
                       <option value="90">90</option>
                       <option value="120">120</option>
                     </select>
                   </div>
+                  <div>
+                    <label for="testAudienceMode">Audience</label>
+                    <select id="testAudienceMode">
+                      <option value="all" ${state.teacherTestAudienceMode === 'all' ? 'selected' : ''}>All students in selected subject</option>
+                      <option value="selected" ${state.teacherTestAudienceMode === 'selected' ? 'selected' : ''}>Selected students only</option>
+                    </select>
+                  </div>
                 </form>
 
-                <label for="testQuestionsInput">${
-                  state.teacherTestType === 'mcq'
-                    ? 'MCQ format per line: Question|Option A|Option B|Option C|Option D|Correct Option Number'
-                    : 'Long questions: one question per line'
-                }</label>
-                <textarea id="testQuestionsInput" rows="8" placeholder="${
-                  state.teacherTestType === 'mcq'
-                    ? 'Q1 text|A|B|C|D|2'
-                    : 'Write question 1 on first line'
-                }"></textarea>
+                ${
+                  state.teacherTestAudienceMode === 'selected'
+                    ? `
+                      <div class="test-audience-panel">
+                        <div class="progress-row">
+                          <h4>Select Students</h4>
+                          <div class="button-row">
+                            <button type="button" class="mini-btn" id="selectAllTargetsBtn">All in Subject</button>
+                            <button type="button" class="mini-btn" id="clearTargetsBtn">Clear</button>
+                          </div>
+                        </div>
+                        ${
+                          !state.teacherTestSubjectId
+                            ? '<p class="muted">Choose a subject first to select students.</p>'
+                            : availableStudentsForTest.length
+                              ? `
+                                <div class="target-student-list">
+                                  ${availableStudentsForTest
+                                    .map(
+                                      (student) => `
+                                        <label class="target-student-item">
+                                          <input
+                                            type="checkbox"
+                                            data-test-target-student="${student._id}"
+                                            ${state.teacherTestSelectedStudentIds.includes(student._id) ? 'checked' : ''}
+                                          />
+                                          <span>${escapeHtml(student.fullName)} <small>@${escapeHtml(student.username)}</small></span>
+                                        </label>
+                                      `
+                                    )
+                                    .join('')}
+                                </div>
+                              `
+                              : '<p class="muted">No students found for this subject yet.</p>'
+                        }
+                      </div>
+                    `
+                    : ''
+                }
+
+                ${
+                  state.teacherTestType === 'mcq' || state.teacherTestType === 'true_false'
+                    ? objectiveQuestionBuilderMarkup(state.teacherTestType)
+                    : `
+                      <label for="testQuestionsInput">${
+                        state.teacherTestType === 'short'
+                          ? 'Short-answer questions: one question per line'
+                          : 'Long-format questions: one question per line'
+                      }</label>
+                      <textarea id="testQuestionsInput" rows="8" placeholder="Write question 1 on first line"></textarea>
+                    `
+                }
 
                 <button id="createTestBtn" class="cta-main">Publish Test</button>
                 <p class="auth-note" id="createTestStatus"></p>
@@ -1462,6 +2061,7 @@ async function renderTeacherDashboard() {
                       <tr>
                         <th>Title</th>
                         <th>Type</th>
+                        <th>Audience</th>
                         <th>Duration</th>
                         <th>Created</th>
                       </tr>
@@ -1474,14 +2074,15 @@ async function renderTeacherDashboard() {
                                 (test) => `
                                   <tr>
                                     <td>${escapeHtml(test.title)}</td>
-                                    <td>${escapeHtml(test.type.toUpperCase())}</td>
+                                    <td>${escapeHtml(formatTestType(test.type))}</td>
+                                    <td>${test.audienceMode === 'selected' ? 'Selected Students' : 'All Students'}</td>
                                     <td>${escapeHtml(test.durationMinutes)} min</td>
                                     <td>${formatDate(test.createdAt)}</td>
                                   </tr>
                                 `
                               )
                               .join('')
-                          : '<tr><td colspan="4">No tests published.</td></tr>'
+                          : '<tr><td colspan="5">No tests published.</td></tr>'
                       }
                     </tbody>
                   </table>
@@ -1492,31 +2093,114 @@ async function renderTeacherDashboard() {
         }
 
         ${
-          state.teacherTab === 'messages'
+          state.teacherTab === 'assessment'
             ? `
               <section class="panel">
-                <h3>Message Student</h3>
-                <label for="teacherMessageStudentId">Choose Student</label>
-                <select id="teacherMessageStudentId">
-                  ${students
-                    .map(
-                      (student) =>
-                        `<option value="${student._id}" ${
-                          state.teacherMessageStudentId === student._id ? 'selected' : ''
-                        }>${escapeHtml(student.fullName)}</option>`
-                    )
-                    .join('')}
-                </select>
-
-                <label for="teacherMessageText">Message</label>
-                <textarea id="teacherMessageText" rows="4" placeholder="Type message"></textarea>
-                <button id="teacherSendMessageBtn" class="cta-main">Send</button>
-                <p class="auth-note" id="teacherMessageStatus"></p>
+                <h3>Assessment</h3>
+                <p class="muted">Review student submissions and assign marks for short-form and long-form tests.</p>
+                <div class="two-grid-form">
+                  <div>
+                    <label for="teacherAssessmentQuery">Search Student</label>
+                    <input id="teacherAssessmentQuery" type="text" value="${escapeHtml(state.teacherAssessmentQuery)}" placeholder="Name or username" />
+                  </div>
+                  <div>
+                    <label for="teacherAssessmentSubjectId">Subject</label>
+                    <select id="teacherAssessmentSubjectId">
+                      <option value="">All Subjects</option>
+                      ${subjects
+                        .map(
+                          (subject) =>
+                            `<option value="${subject._id}" ${
+                              state.teacherAssessmentSubjectId === subject._id ? 'selected' : ''
+                            }>${escapeHtml(subject.name)}</option>`
+                        )
+                        .join('')}
+                    </select>
+                  </div>
+                  <div>
+                    <label for="teacherAssessmentType">Type</label>
+                    <select id="teacherAssessmentType">
+                      <option value="">All</option>
+                      <option value="short" ${state.teacherAssessmentType === 'short' ? 'selected' : ''}>Short Answer</option>
+                      <option value="long" ${state.teacherAssessmentType === 'long' ? 'selected' : ''}>Long Answer</option>
+                      <option value="mcq" ${state.teacherAssessmentType === 'mcq' ? 'selected' : ''}>MCQ</option>
+                      <option value="true_false" ${state.teacherAssessmentType === 'true_false' ? 'selected' : ''}>True / False</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label for="teacherAssessmentStatus">Status</label>
+                    <select id="teacherAssessmentStatus">
+                      <option value="pending" ${state.teacherAssessmentStatus === 'pending' ? 'selected' : ''}>Pending</option>
+                      <option value="graded" ${state.teacherAssessmentStatus === 'graded' ? 'selected' : ''}>Graded</option>
+                      <option value="all" ${state.teacherAssessmentStatus === 'all' ? 'selected' : ''}>All</option>
+                    </select>
+                  </div>
+                </div>
               </section>
 
-              <section class="panel">
-                <h3>Conversation</h3>
-                ${messageFeedMarkup(conversation, user.id)}
+              <section class="panel table-panel">
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Submitted</th>
+                        <th>Student</th>
+                        <th>Subject</th>
+                        <th>Test</th>
+                        <th>Type</th>
+                        <th>Score</th>
+                        <th>Answers</th>
+                        <th>Grade</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${
+                        assessments.length
+                          ? assessments
+                              .map((attempt) => {
+                                const isSubjective =
+                                  attempt.type === 'short' || attempt.type === 'long';
+                                const scoreText =
+                                  attempt.scorePercent == null ? 'Pending' : `${attempt.scorePercent}%`;
+                                const gradeInputId = `assessment-marks-${attempt.id}`;
+                                const feedbackInputId = `assessment-feedback-${attempt.id}`;
+                                return `
+                                  <tr>
+                                    <td>${formatDate(attempt.createdAt)}</td>
+                                    <td>${escapeHtml(attempt.student?.fullName || '-')}<br /><small>${escapeHtml(attempt.student?.username || '')}</small></td>
+                                    <td>${escapeHtml(attempt.test?.subjectName || '-')}</td>
+                                    <td>${escapeHtml(attempt.test?.title || '-')}</td>
+                                    <td>${escapeHtml(formatTestType(attempt.type))}</td>
+                                    <td>${escapeHtml(scoreText)}${
+                                  attempt.evaluatedAt
+                                    ? `<br /><small>Graded: ${escapeHtml(formatDate(attempt.evaluatedAt))}</small>`
+                                    : ''
+                                }</td>
+                                    <td>${assessmentAnswersMarkup(attempt)}</td>
+                                    <td>
+                                      ${
+                                        isSubjective
+                                          ? `
+                                            <input id="${gradeInputId}" type="number" min="0" max="100" step="1" value="${
+                                              attempt.assignedMarks == null ? '' : escapeHtml(attempt.assignedMarks)
+                                            }" placeholder="0-100" />
+                                            <input id="${feedbackInputId}" type="text" value="${escapeHtml(
+                                              attempt.teacherFeedback || ''
+                                            )}" placeholder="Feedback (optional)" />
+                                            <button class="mini-btn" data-grade-attempt="${attempt.id}" data-grade-input="${gradeInputId}" data-feedback-input="${feedbackInputId}">Save</button>
+                                          `
+                                          : '<span class="muted">Auto-scored</span>'
+                                      }
+                                    </td>
+                                  </tr>
+                                `;
+                              })
+                              .join('')
+                          : '<tr><td colspan="8">No submissions found for current filters.</td></tr>'
+                      }
+                    </tbody>
+                  </table>
+                </div>
               </section>
             `
             : ''
@@ -1534,39 +2218,99 @@ async function renderTeacherDashboard() {
 
   document.getElementById('logoutBtn').addEventListener('click', logout);
 
-  document
-    .getElementById('teacherMarkNotificationsBtn')
-    .addEventListener('click', async () => {
-      try {
-        await markAllNotificationsRead('teacher');
-        void renderTeacherDashboard();
-      } catch (error) {
-        alert(error.message);
-      }
-    });
-
   const createSubjectBtn = document.getElementById('createSubjectBtn');
   if (createSubjectBtn) {
     createSubjectBtn.addEventListener('click', async () => {
       const status = document.getElementById('createSubjectStatus');
+      const form = document.getElementById('createSubjectForm');
+      if (form && !form.reportValidity()) return;
       status.textContent = 'Creating subject...';
 
+      await withButtonLoading(createSubjectBtn, 'Creating...', async () => {
+        try {
+          const name = sanitizeValue(document.getElementById('subjectName').value);
+          const syllabusFile = document.getElementById('syllabusPdfFile').files[0] || null;
+
+          if (name.length < 2) {
+            status.textContent = 'Subject name must be at least 2 characters.';
+            showToast(status.textContent, 'error');
+            return;
+          }
+          if (!syllabusFile || !/\.pdf$/i.test(syllabusFile.name)) {
+            status.textContent = 'Please upload syllabus as a PDF file.';
+            showToast(status.textContent, 'error');
+            return;
+          }
+
+          status.textContent = 'Uploading syllabus...';
+          const uploadedSyllabus = await uploadAsset(syllabusFile, 'syllabus');
+
+          const payload = {
+            name,
+            syllabusPdfUrl: uploadedSyllabus.url,
+            syllabusPdfName: syllabusFile.name
+          };
+
+          await api('/teacher/subjects', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+          });
+
+          status.textContent = 'Subject created.';
+          showToast('Subject created successfully.', 'success');
+          void renderTeacherDashboard();
+        } catch (error) {
+          status.textContent = error.message;
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  }
+
+  let syllabusUpdateSubjectId = '';
+  const updateSyllabusFileInput = document.getElementById('updateSyllabusFileInput');
+  const updateSyllabusStatus = document.getElementById('updateSyllabusStatus');
+
+  document.querySelectorAll('[data-update-syllabus]').forEach((button) => {
+    button.addEventListener('click', () => {
+      syllabusUpdateSubjectId = button.getAttribute('data-update-syllabus') || '';
+      if (!syllabusUpdateSubjectId || !updateSyllabusFileInput) return;
+      updateSyllabusFileInput.value = '';
+      updateSyllabusFileInput.click();
+    });
+  });
+
+  if (updateSyllabusFileInput) {
+    updateSyllabusFileInput.addEventListener('change', async () => {
+      const syllabusFile = updateSyllabusFileInput.files?.[0] || null;
+      if (!syllabusUpdateSubjectId || !syllabusFile) return;
+      if (!/\.pdf$/i.test(syllabusFile.name)) {
+        if (updateSyllabusStatus) updateSyllabusStatus.textContent = 'Please upload a PDF file.';
+        showToast('Please upload a PDF file.', 'error');
+        return;
+      }
+
+      if (updateSyllabusStatus) updateSyllabusStatus.textContent = 'Uploading new syllabus...';
+
       try {
-        const payload = {
-          name: document.getElementById('subjectName').value.trim(),
-          syllabusPdfUrl: document.getElementById('syllabusPdfUrl').value.trim(),
-          syllabusPdfName: document.getElementById('syllabusPdfName').value.trim()
-        };
-
-        await api('/teacher/subjects', {
-          method: 'POST',
-          body: JSON.stringify(payload)
+        const uploadedSyllabus = await uploadAsset(syllabusFile, 'syllabus');
+        await api(`/teacher/subjects/${syllabusUpdateSubjectId}/syllabus`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            syllabusPdfUrl: uploadedSyllabus.url,
+            syllabusPdfName: syllabusFile.name
+          })
         });
-
-        status.textContent = 'Subject created.';
+        if (updateSyllabusStatus) updateSyllabusStatus.textContent = 'Syllabus updated successfully.';
+        showToast('Syllabus updated.', 'success');
         void renderTeacherDashboard();
       } catch (error) {
-        status.textContent = error.message;
+        if (updateSyllabusStatus) {
+          updateSyllabusStatus.textContent =
+            error.message ||
+            'Upload failed. Configure Cloudinary in production for reliable PDF uploads.';
+        }
+        showToast(error.message || 'Could not upload syllabus.', 'error');
       }
     });
   }
@@ -1577,12 +2321,15 @@ async function renderTeacherDashboard() {
       const subjectId = button.getAttribute('data-delete-subject');
       if (!subjectId) return;
 
-      try {
-        await api(`/teacher/subjects/${subjectId}`, { method: 'DELETE' });
-        void renderTeacherDashboard();
-      } catch (error) {
-        alert(error.message);
-      }
+      await withButtonLoading(button, 'Deleting...', async () => {
+        try {
+          await api(`/teacher/subjects/${subjectId}`, { method: 'DELETE' });
+          showToast('Subject deleted.', 'success');
+          void renderTeacherDashboard();
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
     });
   });
 
@@ -1590,48 +2337,74 @@ async function renderTeacherDashboard() {
   if (createStudentBtn) {
     createStudentBtn.addEventListener('click', async () => {
       const status = document.getElementById('createStudentStatus');
+      const form = document.getElementById('createStudentForm');
+      if (form && !form.reportValidity()) return;
       status.textContent = 'Creating student...';
 
-      try {
-        const selectedSubjects = Array.from(
-          document.getElementById('studentSubjects').selectedOptions
-        ).map((option) => option.value);
+      await withButtonLoading(createStudentBtn, 'Creating...', async () => {
+        try {
+          const selectedSubjects = Array.from(
+            document.getElementById('studentSubjects').selectedOptions
+          ).map((option) => option.value);
 
-        if (!selectedSubjects.length) {
-          status.textContent = 'Select at least one subject.';
-          return;
+          if (!selectedSubjects.length) {
+            status.textContent = 'Select at least one subject.';
+            showToast(status.textContent, 'error');
+            return;
+          }
+
+          const payload = {
+            fullName: document.getElementById('studentFullName').value.trim(),
+            username: document.getElementById('studentUsername').value.trim(),
+            password: document.getElementById('studentTempPassword').value,
+            email: document.getElementById('studentEmail').value.trim(),
+            phone: document.getElementById('studentPhone').value.trim(),
+            parentEmail: document.getElementById('studentParentEmail').value.trim(),
+            parentPhone: document.getElementById('studentParentPhone').value.trim(),
+            subjectIds: selectedSubjects
+          };
+
+          const result = await api('/teacher/students', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+          });
+
+          if (result.data?.student?.username) {
+            state.teacherStudentSecrets[result.data.student.username] = payload.password;
+          }
+
+          const credentialsText = [
+            `Institution ID: ${state.session.institutionId}`,
+            `Username: ${result.data.student.username}`,
+            `Temporary Password: ${payload.password}`
+          ].join(' | ');
+          status.textContent = `Student account created. ${credentialsText}`;
+          showToast('Student account created.', 'success');
+          try {
+            await copyTextToClipboard(
+              `LIFT Educations login\n${credentialsText.split(' | ').join('\n')}`
+            );
+            showToast('Student credentials copied.', 'info');
+          } catch (error) {
+            // no-op, status still contains credentials
+          }
+          void renderTeacherDashboard();
+        } catch (error) {
+          status.textContent = error.message;
+          showToast(error.message, 'error');
         }
-
-        const payload = {
-          fullName: document.getElementById('studentFullName').value.trim(),
-          username: document.getElementById('studentUsername').value.trim(),
-          password: document.getElementById('studentTempPassword').value,
-          email: document.getElementById('studentEmail').value.trim(),
-          phone: document.getElementById('studentPhone').value.trim(),
-          subjectIds: selectedSubjects
-        };
-
-        const result = await api('/teacher/students', {
-          method: 'POST',
-          body: JSON.stringify(payload)
-        });
-
-        status.textContent = 'Student account created.';
-        alert(
-          `Student created:\nInstitution ID: ${state.session.institutionId}\nUsername: ${result.data.student.username}\nTemporary Password: ${payload.password}`
-        );
-        void renderTeacherDashboard();
-      } catch (error) {
-        status.textContent = error.message;
-      }
+      });
     });
   }
 
   const searchInput = document.getElementById('teacherStudentSearch');
   if (searchInput) {
     searchInput.addEventListener('input', (event) => {
-      state.teacherStudentQuery = event.target.value;
-      void renderTeacherDashboard();
+      const nextValue = event.target.value;
+      debounceByKey('teacher-student-search', () => {
+        state.teacherStudentQuery = nextValue;
+        void renderTeacherDashboard();
+      });
     });
   }
 
@@ -1666,12 +2439,147 @@ async function renderTeacherDashboard() {
       const studentId = button.getAttribute('data-delete-student');
       if (!studentId) return;
 
-      try {
-        await api(`/teacher/students/${studentId}`, { method: 'DELETE' });
-        void renderTeacherDashboard();
-      } catch (error) {
-        alert(error.message);
-      }
+      await withButtonLoading(button, 'Deleting...', async () => {
+        try {
+          await api(`/teacher/students/${studentId}`, { method: 'DELETE' });
+          showToast('Student deleted.', 'success');
+          void renderTeacherDashboard();
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  });
+
+  const classPlanDateInput = document.getElementById('teacherClassPlanDate');
+  if (classPlanDateInput) {
+    classPlanDateInput.addEventListener('change', (event) => {
+      state.teacherClassPlanDate = event.target.value || todayIsoDate();
+      void renderTeacherDashboard();
+    });
+  }
+
+  const classPlanResourceType = document.getElementById('classPlanResourceType');
+  if (classPlanResourceType) {
+    classPlanResourceType.addEventListener('change', (event) => {
+      state.teacherClassPlanResourceType = event.target.value || 'pdf';
+      void renderTeacherDashboard();
+    });
+  }
+
+  const createClassPlanBtn = document.getElementById('createClassPlanBtn');
+  if (createClassPlanBtn) {
+    createClassPlanBtn.addEventListener('click', async () => {
+      const status = document.getElementById('createClassPlanStatus');
+      const form = document.getElementById('createClassPlanForm');
+      if (form && !form.reportValidity()) return;
+      status.textContent = 'Saving class plan...';
+
+      await withButtonLoading(createClassPlanBtn, 'Saving...', async () => {
+        try {
+          const subjectId = document.getElementById('classPlanSubjectId').value;
+          const title = sanitizeValue(document.getElementById('classPlanTitle').value);
+          const description = sanitizeValue(document.getElementById('classPlanDescription').value);
+          const scheduledDate = document.getElementById('classPlanScheduledDate').value;
+          const startTime = document.getElementById('classPlanStartTime').value;
+          const endTime = document.getElementById('classPlanEndTime').value;
+
+          const resourceType = state.teacherClassPlanResourceType;
+          const resourceTitle = sanitizeValue(
+            document.getElementById('classPlanResourceTitle')?.value || ''
+          );
+          const resourceKeywords = sanitizeValue(
+            document.getElementById('classPlanResourceKeywords')?.value || ''
+          );
+
+          let resource = null;
+          const classPlanResourceFile = document.getElementById('classPlanResourceFile')?.files?.[0] || null;
+          const classPlanResourceValue = sanitizeValue(
+            document.getElementById('classPlanResourceValue')?.value || ''
+          );
+          const hasResourceInput =
+            Boolean(resourceTitle) || Boolean(classPlanResourceFile) || Boolean(classPlanResourceValue);
+
+          if (hasResourceInput) {
+            if (!resourceTitle) {
+              status.textContent = 'Resource title is required if you attach a resource.';
+              showToast(status.textContent, 'error');
+              return;
+            }
+
+            if (resourceType === 'pdf' || resourceType === 'ebook') {
+              if (!classPlanResourceFile) {
+                status.textContent = 'Please upload a resource file.';
+                showToast(status.textContent, 'error');
+                return;
+              }
+              const uploadedResource = await uploadAsset(
+                classPlanResourceFile,
+                `resources/${resourceType}`
+              );
+              resource = {
+                resourceType,
+                title: resourceTitle,
+                value: uploadedResource.url,
+                source: 'file',
+                keywords: resourceKeywords || classPlanResourceFile.name
+              };
+            } else {
+              if (!classPlanResourceValue || !isHttpUrl(classPlanResourceValue)) {
+                status.textContent = 'Please enter a valid resource URL.';
+                showToast(status.textContent, 'error');
+                return;
+              }
+              resource = {
+                resourceType,
+                title: resourceTitle,
+                value: classPlanResourceValue,
+                source: 'text',
+                keywords: resourceKeywords || resourceTitle
+              };
+            }
+          }
+
+          await api('/teacher/class-plans', {
+            method: 'POST',
+            body: JSON.stringify({
+              subjectId,
+              title,
+              description,
+              scheduledDate,
+              startTime,
+              endTime,
+              resource
+            })
+          });
+
+          state.teacherClassPlanDate = scheduledDate || state.teacherClassPlanDate;
+          status.textContent = 'Class plan saved successfully.';
+          showToast('Class plan created.', 'success');
+          void renderTeacherDashboard();
+        } catch (error) {
+          status.textContent = error.message;
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  }
+
+  document.querySelectorAll('[data-delete-class-plan]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (!confirm('Delete this class plan?')) return;
+      const planId = button.getAttribute('data-delete-class-plan');
+      if (!planId) return;
+
+      await withButtonLoading(button, 'Deleting...', async () => {
+        try {
+          await api(`/teacher/class-plans/${planId}`, { method: 'DELETE' });
+          showToast('Class plan deleted.', 'success');
+          void renderTeacherDashboard();
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
     });
   });
 
@@ -1679,41 +2587,95 @@ async function renderTeacherDashboard() {
   if (createResourceBtn) {
     createResourceBtn.addEventListener('click', async () => {
       const status = document.getElementById('createResourceStatus');
+      const form = document.getElementById('createResourceForm');
+      if (form && !form.reportValidity()) return;
       status.textContent = 'Uploading resource...';
 
-      try {
-        const payload = {
-          subjectId: document.getElementById('resourceSubjectId').value,
-          resourceType: document.getElementById('resourceType').value,
-          title: document.getElementById('resourceTitle').value.trim(),
-          value: document.getElementById('resourceValue').value.trim(),
-          source: 'text',
-          keywords: document.getElementById('resourceKeywords').value.trim()
-        };
+      await withButtonLoading(createResourceBtn, 'Uploading...', async () => {
+        try {
+          const subjectId = document.getElementById('resourceSubjectId').value;
+          const resourceType = document.getElementById('resourceType').value;
+          const title = sanitizeValue(document.getElementById('resourceTitle').value);
+          const keywordInput = sanitizeValue(document.getElementById('resourceKeywords').value);
 
-        if (!payload.subjectId || !payload.title || !payload.value) {
-          status.textContent = 'Subject, title and value are required.';
-          return;
+          if (!subjectId) {
+            status.textContent = 'Please choose a subject.';
+            showToast(status.textContent, 'error');
+            return;
+          }
+          if (!title) {
+            status.textContent = 'Resource title is required.';
+            showToast(status.textContent, 'error');
+            return;
+          }
+
+          let payload;
+          if (resourceType === 'pdf' || resourceType === 'ebook') {
+            const file = document.getElementById('resourceFile')?.files?.[0] || null;
+            if (!file) {
+              status.textContent = 'Please upload a file for this resource type.';
+              showToast(status.textContent, 'error');
+              return;
+            }
+
+            payload = {
+              subjectId,
+              resourceType,
+              title,
+              value: (await uploadAsset(file, `resources/${resourceType}`)).url,
+              source: 'file',
+              keywords: keywordInput || file.name
+            };
+          } else {
+            const value = sanitizeValue(document.getElementById('resourceValue')?.value || '');
+            if (!value || !isHttpUrl(value)) {
+              status.textContent = 'Please provide a valid URL.';
+              showToast(status.textContent, 'error');
+              return;
+            }
+
+            payload = {
+              subjectId,
+              resourceType,
+              title,
+              value,
+              source: 'text',
+              keywords: keywordInput || title
+            };
+          }
+
+          await api('/teacher/resources', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+          });
+
+          status.textContent = 'Resource uploaded.';
+          showToast('Resource uploaded successfully.', 'success');
+          void renderTeacherDashboard();
+        } catch (error) {
+          status.textContent = error.message;
+          showToast(error.message, 'error');
         }
+      });
+    });
+  }
 
-        await api('/teacher/resources', {
-          method: 'POST',
-          body: JSON.stringify(payload)
-        });
-
-        status.textContent = 'Resource uploaded.';
-        void renderTeacherDashboard();
-      } catch (error) {
-        status.textContent = error.message;
-      }
+  const resourceTypeInput = document.getElementById('resourceType');
+  if (resourceTypeInput) {
+    resourceTypeInput.addEventListener('change', (event) => {
+      state.teacherResourceCreateType = event.target.value;
+      void renderTeacherDashboard();
     });
   }
 
   const teacherResourceSearch = document.getElementById('teacherResourceSearch');
   if (teacherResourceSearch) {
     teacherResourceSearch.addEventListener('input', (event) => {
-      state.teacherResourceSearch = event.target.value;
-      void renderTeacherDashboard();
+      const nextValue = event.target.value;
+      debounceByKey('teacher-resource-search', () => {
+        state.teacherResourceSearch = nextValue;
+        void renderTeacherDashboard();
+      });
     });
   }
 
@@ -1739,12 +2701,15 @@ async function renderTeacherDashboard() {
       const resourceId = button.getAttribute('data-delete-resource');
       if (!resourceId) return;
 
-      try {
-        await api(`/teacher/resources/${resourceId}`, { method: 'DELETE' });
-        void renderTeacherDashboard();
-      } catch (error) {
-        alert(error.message);
-      }
+      await withButtonLoading(button, 'Deleting...', async () => {
+        try {
+          await api(`/teacher/resources/${resourceId}`, { method: 'DELETE' });
+          showToast('Resource deleted.', 'success');
+          void renderTeacherDashboard();
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
     });
   });
 
@@ -1759,7 +2724,48 @@ async function renderTeacherDashboard() {
   const testSubject = document.getElementById('testSubjectId');
   if (testSubject) {
     testSubject.addEventListener('change', (event) => {
-      state.teacherTestSubjectId = event.target.value;
+      state.teacherTestSubjectId = event.target.value || '';
+      void renderTeacherDashboard();
+    });
+  }
+
+  const testAudienceMode = document.getElementById('testAudienceMode');
+  if (testAudienceMode) {
+    testAudienceMode.addEventListener('change', (event) => {
+      state.teacherTestAudienceMode = event.target.value || 'all';
+      if (state.teacherTestAudienceMode === 'all') {
+        state.teacherTestSelectedStudentIds = [];
+      }
+      void renderTeacherDashboard();
+    });
+  }
+
+  document.querySelectorAll('[data-test-target-student]').forEach((input) => {
+    input.addEventListener('change', () => {
+      state.teacherTestSelectedStudentIds = Array.from(
+        document.querySelectorAll('[data-test-target-student]:checked')
+      )
+        .map((item) => item.getAttribute('data-test-target-student'))
+        .filter(Boolean);
+    });
+  });
+
+  const selectAllTargetsBtn = document.getElementById('selectAllTargetsBtn');
+  if (selectAllTargetsBtn) {
+    selectAllTargetsBtn.addEventListener('click', () => {
+      const values = Array.from(document.querySelectorAll('[data-test-target-student]')).map((item) =>
+        item.getAttribute('data-test-target-student')
+      );
+      state.teacherTestSelectedStudentIds = values.filter(Boolean);
+      void renderTeacherDashboard();
+    });
+  }
+
+  const clearTargetsBtn = document.getElementById('clearTargetsBtn');
+  if (clearTargetsBtn) {
+    clearTargetsBtn.addEventListener('click', () => {
+      state.teacherTestSelectedStudentIds = [];
+      void renderTeacherDashboard();
     });
   }
 
@@ -1767,75 +2773,137 @@ async function renderTeacherDashboard() {
   if (createTestBtn) {
     createTestBtn.addEventListener('click', async () => {
       const status = document.getElementById('createTestStatus');
+      const form = document.getElementById('createTestForm');
+      if (form && !form.reportValidity()) return;
       status.textContent = 'Publishing test...';
 
-      try {
-        const subjectId = document.getElementById('testSubjectId').value;
-        const title = document.getElementById('testTitle').value.trim();
-        const type = document.getElementById('testType').value;
-        const durationMinutes = Number(document.getElementById('testDuration').value || 60);
-        const rawQuestions = document.getElementById('testQuestionsInput').value;
+      await withButtonLoading(createTestBtn, 'Publishing...', async () => {
+        try {
+          const subjectId = document.getElementById('testSubjectId').value;
+          const title = sanitizeValue(document.getElementById('testTitle').value);
+          const type = document.getElementById('testType').value;
+          const durationMinutes = Number(document.getElementById('testDuration').value || 60);
+          const audienceMode = document.getElementById('testAudienceMode')?.value || 'all';
+          const selectedStudentIds =
+            audienceMode === 'selected'
+              ? Array.from(document.querySelectorAll('[data-test-target-student]:checked'))
+                  .map((item) => item.getAttribute('data-test-target-student'))
+                  .filter(Boolean)
+              : [];
 
-        if (!subjectId || !title) {
-          status.textContent = 'Subject and title are required.';
-          return;
+          if (!subjectId || !title) {
+            status.textContent = 'Subject and title are required.';
+            showToast(status.textContent, 'error');
+            return;
+          }
+
+          if (audienceMode === 'selected' && !selectedStudentIds.length) {
+            status.textContent = 'Select at least one student for selected audience mode.';
+            showToast(status.textContent, 'error');
+            return;
+          }
+
+          let questions = [];
+          if (type === 'mcq' || type === 'true_false') {
+            questions = collectObjectiveQuestions(type);
+          } else {
+            const rawQuestions = document.getElementById('testQuestionsInput').value;
+            questions = parseLongQuestions(rawQuestions);
+          }
+
+          await api('/teacher/tests', {
+            method: 'POST',
+            body: JSON.stringify({
+              subjectId,
+              title,
+              type,
+              durationMinutes:
+                type === 'mcq' || type === 'true_false'
+                  ? MCQ_DURATION_MINUTES
+                  : durationMinutes,
+              audienceMode,
+              selectedStudentIds,
+              sourcePdfName: '',
+              questions
+            })
+          });
+          status.textContent = 'Test published.';
+          showToast('Test published successfully.', 'success');
+          void renderTeacherDashboard();
+        } catch (error) {
+          status.textContent = error.message;
+          showToast(error.message, 'error');
         }
-
-        const questions = type === 'mcq' ? parseMcqQuestions(rawQuestions) : parseLongQuestions(rawQuestions);
-        await api('/teacher/tests', {
-          method: 'POST',
-          body: JSON.stringify({
-            subjectId,
-            title,
-            type,
-            durationMinutes,
-            questions
-          })
-        });
-
-        status.textContent = 'Test published.';
-        void renderTeacherDashboard();
-      } catch (error) {
-        status.textContent = error.message;
-      }
+      });
     });
   }
 
-  const teacherMessageStudentId = document.getElementById('teacherMessageStudentId');
-  if (teacherMessageStudentId) {
-    teacherMessageStudentId.addEventListener('change', (event) => {
-      state.teacherMessageStudentId = event.target.value;
+  const teacherAssessmentQuery = document.getElementById('teacherAssessmentQuery');
+  if (teacherAssessmentQuery) {
+    teacherAssessmentQuery.addEventListener('input', (event) => {
+      const nextValue = event.target.value;
+      debounceByKey('teacher-assessment-search', () => {
+        state.teacherAssessmentQuery = nextValue;
+        void renderTeacherDashboard();
+      });
+    });
+  }
+
+  const teacherAssessmentSubject = document.getElementById('teacherAssessmentSubjectId');
+  if (teacherAssessmentSubject) {
+    teacherAssessmentSubject.addEventListener('change', (event) => {
+      state.teacherAssessmentSubjectId = event.target.value || '';
       void renderTeacherDashboard();
     });
   }
 
-  const teacherSendMessageBtn = document.getElementById('teacherSendMessageBtn');
-  if (teacherSendMessageBtn) {
-    teacherSendMessageBtn.addEventListener('click', async () => {
-      const status = document.getElementById('teacherMessageStatus');
-      status.textContent = 'Sending...';
-
-      try {
-        const toUserId = document.getElementById('teacherMessageStudentId').value;
-        const text = document.getElementById('teacherMessageText').value.trim();
-        if (!toUserId || !text) {
-          status.textContent = 'Choose student and type message.';
-          return;
-        }
-
-        await api('/teacher/messages', {
-          method: 'POST',
-          body: JSON.stringify({ toUserId, text })
-        });
-
-        status.textContent = 'Message sent.';
-        document.getElementById('teacherMessageText').value = '';
-        void renderTeacherDashboard();
-      } catch (error) {
-        status.textContent = error.message;
-      }
+  const teacherAssessmentType = document.getElementById('teacherAssessmentType');
+  if (teacherAssessmentType) {
+    teacherAssessmentType.addEventListener('change', (event) => {
+      state.teacherAssessmentType = event.target.value || '';
+      void renderTeacherDashboard();
     });
   }
+
+  const teacherAssessmentStatus = document.getElementById('teacherAssessmentStatus');
+  if (teacherAssessmentStatus) {
+    teacherAssessmentStatus.addEventListener('change', (event) => {
+      state.teacherAssessmentStatus = event.target.value || 'pending';
+      void renderTeacherDashboard();
+    });
+  }
+
+  document.querySelectorAll('[data-grade-attempt]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const attemptId = button.getAttribute('data-grade-attempt');
+      const marksInputId = button.getAttribute('data-grade-input');
+      const feedbackInputId = button.getAttribute('data-feedback-input');
+      if (!attemptId || !marksInputId) return;
+
+      const marksInput = document.getElementById(marksInputId);
+      const feedbackInput = feedbackInputId ? document.getElementById(feedbackInputId) : null;
+      const marks = Number(String(marksInput?.value || '').trim());
+      const feedback = sanitizeValue(feedbackInput?.value || '');
+
+      if (!Number.isFinite(marks) || marks < 0 || marks > 100) {
+        showToast('Marks must be between 0 and 100.', 'error');
+        return;
+      }
+
+      await withButtonLoading(button, 'Saving...', async () => {
+        try {
+          await api(`/teacher/assessments/${attemptId}/grade`, {
+            method: 'PATCH',
+            body: JSON.stringify({ marks, feedback })
+          });
+          showToast('Assessment saved.', 'success');
+          void renderTeacherDashboard();
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  });
 
   bindAccountPasswordForm();
 }
@@ -1871,12 +2939,12 @@ function renderStudentAttemptResult(test, attempt, backTab) {
       <main class="page container-xl">
         <section class="panel">
           <h2>${escapeHtml(test.title)}</h2>
-          <p class="subline">${escapeHtml(test.type.toUpperCase())} | ${escapeHtml(test.subjectName || '')}</p>
+          <p class="subline">${escapeHtml(formatTestType(test.type))} | ${escapeHtml(test.subjectName || '')}</p>
           <p class="headline">${scoreText}</p>
           <p class="muted">Time spent: ${Math.round((attempt.timeSpentSeconds || 0) / 60)} minutes</p>
 
           ${
-            test.type === 'mcq'
+            test.type === 'mcq' || test.type === 'true_false'
               ? '<button class="cta-soft" id="downloadAnswerKeyBtn">Download Answer Key</button>'
               : ''
           }
@@ -1893,15 +2961,18 @@ function renderStudentAttemptResult(test, attempt, backTab) {
   const answerKeyBtn = document.getElementById('downloadAnswerKeyBtn');
   if (answerKeyBtn) {
     answerKeyBtn.addEventListener('click', async () => {
-      try {
-        const result = await api(`/student/tests/attempts/${attempt._id}/answer-key`);
-        downloadTextFile(
-          `${(test.title || 'test').replace(/\s+/g, '-').toLowerCase()}-answer-key.txt`,
-          buildAnswerKeyText(result.data)
-        );
-      } catch (error) {
-        alert(error.message);
-      }
+      await withButtonLoading(answerKeyBtn, 'Downloading...', async () => {
+        try {
+          const result = await api(`/student/tests/attempts/${attempt._id}/answer-key`);
+          downloadTextFile(
+            `${(test.title || 'test').replace(/\s+/g, '-').toLowerCase()}-answer-key.txt`,
+            buildAnswerKeyText(result.data)
+          );
+          showToast('Answer key downloaded.', 'success');
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
     });
   }
 }
@@ -1915,7 +2986,7 @@ function renderStudentTestAttempt(test, backTab) {
 
   const questionMarkup = (test.questions || [])
     .map((question, index) => {
-      if (test.type === 'mcq') {
+      if (test.type === 'mcq' || test.type === 'true_false') {
         const options = (question.options || [])
           .map(
             (option, optionIndex) => `
@@ -1949,7 +3020,7 @@ function renderStudentTestAttempt(test, backTab) {
       <header class="main-nav">
         <div class="left-nav">
           ${logoMarkup(true)}
-          <span class="nav-pill active">${escapeHtml(test.type.toUpperCase())} Attempt</span>
+          <span class="nav-pill active">${escapeHtml(formatTestType(test.type))} Attempt</span>
         </div>
         <span class="timer-pill" id="studentAttemptTimer">Time Left: --:--</span>
       </header>
@@ -1989,7 +3060,7 @@ function renderStudentTestAttempt(test, backTab) {
     runtime.attemptSubmitting = true;
 
     const answers = (test.questions || []).map((_, index) => {
-      if (test.type === 'mcq') {
+      if (test.type === 'mcq' || test.type === 'true_false') {
         const checked = document.querySelector(`input[name=\"q-${index}\"]:checked`);
         return checked ? Number(checked.value) : null;
       }
@@ -2053,7 +3124,11 @@ function resourcesGroupedMarkup(resources) {
                       <div class="resource-body">
                         <p><strong>${escapeHtml(item.title)}</strong></p>
                         <p class="muted">${escapeHtml(item.subjectName || '')} | ${escapeHtml(item.teacherName || '')}</p>
-                        <a href="${escapeHtml(item.value)}" target="_blank" rel="noreferrer">Open Resource</a>
+                        ${
+                          item.source === 'file'
+                            ? `<a href="${escapeHtml(item.value)}" download="${escapeHtml(item.title || 'resource')}">Download Resource</a>`
+                            : `<a href="${escapeHtml(item.value)}" target="_blank" rel="noreferrer">Open Resource</a>`
+                        }
                       </div>
                     </article>
                   `
@@ -2068,17 +3143,22 @@ function resourcesGroupedMarkup(resources) {
   return `${section('pdf', 'PDFs')}${section('ebook', 'EBooks')}${section('video', 'Videos')}${section('link', 'Links')}`;
 }
 
+function levelProgressPercent(xp = 0) {
+  const safeXp = Math.max(0, Number(xp || 0));
+  const remainder = safeXp % 120;
+  return Math.round((remainder / 120) * 100);
+}
+
 async function renderStudentDashboard() {
   clearAttemptTimer();
 
-  const [meData, dashboardResult, historyResult, queueResult, teachersResult, notificationsResult] =
+  const [meData, dashboardResult, historyResult, queueResult, todayClassesResult] =
     await Promise.all([
       fetchMe(),
       api('/student/dashboard'),
       api('/student/tests/history'),
       api('/student/tests/queue'),
-      api('/student/teachers'),
-      api('/student/notifications')
+      api('/student/classes/today')
     ]);
 
   const user = meData.user;
@@ -2086,15 +3166,27 @@ async function renderStudentDashboard() {
   const history = historyResult.data.history || [];
   const todayTests = queueResult.data.today || [];
   const pendingTests = queueResult.data.pending || [];
-  const teachers = teachersResult.data.teachers || [];
-  const notifications = notificationsResult.data.notifications || [];
-  const unreadCount = notifications.filter((item) => !item.read).length;
-
-  if (!state.studentMessageTeacherId && teachers.length) {
-    state.studentMessageTeacherId = teachers[0]._id;
-  }
+  const todayClasses = todayClassesResult.data.classes || [];
 
   const subjects = dashboard.subjects || [];
+  const allowedStudentTabs = new Set([
+    'dashboard',
+    'today',
+    'pending',
+    'classes',
+    'resources',
+    'syllabus',
+    'history',
+    'planner',
+    'accounts'
+  ]);
+  if (!allowedStudentTabs.has(state.studentTab)) {
+    state.studentTab = 'dashboard';
+  }
+
+  const todoItems = loadStudentTodos(user.id || user._id);
+  const pendingTodos = todoItems.filter((item) => !item.completed);
+  const completedTodos = todoItems.filter((item) => item.completed);
 
   let resources = [];
   if (state.studentTab === 'resources') {
@@ -2113,16 +3205,6 @@ async function renderStudentDashboard() {
     syllabi = syllabusResult.data.syllabi || [];
   }
 
-  let conversation = [];
-  if (state.studentTab === 'messages' && state.studentMessageTeacherId) {
-    const conversationResult = await api(
-      `/student/messages${toQueryString({ teacherId: state.studentMessageTeacherId })}`
-    );
-    conversation = conversationResult.data.messages || [];
-  }
-
-  const progressPercent = Math.min(100, Math.round((history.length / 20) * 100));
-
   const testMap = new Map([...todayTests, ...pendingTests].map((test) => [test._id, test]));
 
   app.innerHTML = `
@@ -2135,10 +3217,11 @@ async function renderStudentDashboard() {
               { value: 'dashboard', label: 'Dashboard' },
               { value: 'today', label: "Today's Test" },
               { value: 'pending', label: 'Pending Tests' },
-              { value: 'messages', label: 'Messages' },
+              { value: 'classes', label: "Today's Classes" },
               { value: 'resources', label: 'Resources' },
               { value: 'syllabus', label: 'Syllabus' },
               { value: 'history', label: 'Test History' },
+              { value: 'planner', label: 'Study To-Do' },
               { value: 'accounts', label: 'Accounts' }
             ],
             state.studentTab,
@@ -2151,15 +3234,6 @@ async function renderStudentDashboard() {
       <main class="page container-xl">
         <h2>Good Day, ${escapeHtml(user.fullName)} 👋</h2>
         <p class="subline">Institution ID: ${escapeHtml(meData.institution?.institutionId || state.session.institutionId)}</p>
-
-        <section class="panel">
-          <div class="progress-row">
-            <h3>Notifications</h3>
-            <strong>${unreadCount} unread</strong>
-          </div>
-          ${notificationsMarkup(notifications)}
-          <button id="studentMarkNotificationsBtn" class="cta-soft">Mark all read</button>
-        </section>
 
         ${
           state.studentTab === 'dashboard'
@@ -2176,38 +3250,46 @@ async function renderStudentDashboard() {
                 <article class="panel">
                   <h3>Today's Test</h3>
                   <p class="headline">${todayTests.length ? escapeHtml(todayTests[0].title) : 'No test published yet'}</p>
-                  <p class="muted">${todayTests.length ? `${escapeHtml(todayTests[0].type.toUpperCase())} | ${escapeHtml(todayTests[0].durationMinutes)} min` : 'Please check later.'}</p>
+                  <p class="muted">${todayTests.length ? `${escapeHtml(formatTestType(todayTests[0].type))} | ${escapeHtml(todayTests[0].durationMinutes)} min` : 'Please check later.'}</p>
                   <button class="cta-main" data-student-nav="today">Open Today's Tests</button>
                 </article>
 
                 <article class="panel">
-                  <h3>Today's Chapter</h3>
-                  <p class="headline">${subjects.length ? escapeHtml(subjects[0].name) : 'No subjects assigned'}</p>
-                  <p class="muted">Read guide and notes before attempting tests.</p>
-                  <button class="cta-soft" data-student-nav="resources">Open Resources</button>
+                  <h3>Today's Classes</h3>
+                  <p class="headline">${todayClasses.length ? `${todayClasses.length} classes planned` : 'No classes planned today'}</p>
+                  <p class="muted">Check class schedule and attached resources.</p>
+                  <button class="cta-soft" data-student-nav="classes">Open Class Schedule</button>
                 </article>
               </section>
 
               <section class="panel student-actions-panel">
                 <h3>Quick Actions</h3>
                 <div class="student-actions-grid">
-                  <button class="cta-soft action-btn" data-student-nav="messages">Message Teacher</button>
                   <button class="cta-soft action-btn" data-student-nav="resources">Download Resources</button>
                   <button class="cta-soft action-btn" data-student-nav="syllabus">View Syllabus</button>
                   <button class="cta-soft action-btn" data-student-nav="history">View Scores</button>
+                  <button class="cta-soft action-btn" data-student-nav="planner">Open Study To-Do</button>
                 </div>
               </section>
 
-              <section class="panel">
-                <h3>Course Progress</h3>
-                <div class="progress-row">
-                  <p>Overall completion</p>
-                  <strong>${progressPercent}%</strong>
-                </div>
-                <div class="progress-track">
-                  <div class="progress-fill" style="width: ${progressPercent}%"></div>
-                </div>
-                <p class="muted">Subjects Enrolled: ${dashboard.subjectCount} | Tests Attempted: ${dashboard.attemptCount}</p>
+              <section class="two-grid">
+                <article class="panel">
+                  <h3>Streak + XP</h3>
+                  <p class="headline">🔥 ${dashboard.streakDays || 0} day streak</p>
+                  <p class="muted">Level ${dashboard.level || 1} | XP ${dashboard.xp || 0}</p>
+                  <div class="progress-track">
+                    <div class="progress-fill" style="width: ${levelProgressPercent(dashboard.xp)}%"></div>
+                  </div>
+                </article>
+                <article class="panel">
+                  <h3>Badges</h3>
+                  <p class="muted">${
+                    (dashboard.badges || []).length
+                      ? (dashboard.badges || []).join(' • ')
+                      : 'Attempt daily tests to unlock badges.'
+                  }</p>
+                  <button class="cta-soft" data-student-nav="history">View Latest Scores</button>
+                </article>
               </section>
             `
             : ''
@@ -2226,7 +3308,7 @@ async function renderStudentDashboard() {
                             <article class="stack-item pending-item">
                               <div>
                                 <p><strong>${escapeHtml(test.title)}</strong></p>
-                                <p class="muted">${escapeHtml(test.subjectName || '')} | ${escapeHtml(test.type.toUpperCase())} | ${escapeHtml(test.durationMinutes)} min</p>
+                                <p class="muted">${escapeHtml(test.subjectName || '')} | ${escapeHtml(formatTestType(test.type))} | ${escapeHtml(test.durationMinutes)} min</p>
                               </div>
                               <button class="cta-main" data-start-test="${test._id}" data-test-source="today">Start Test</button>
                             </article>
@@ -2253,7 +3335,7 @@ async function renderStudentDashboard() {
                             <article class="stack-item pending-item">
                               <div>
                                 <p><strong>${escapeHtml(test.title)}</strong></p>
-                                <p class="muted">${escapeHtml(test.subjectName || '')} | ${escapeHtml(test.type.toUpperCase())} | ${escapeHtml(test.durationMinutes)} min</p>
+                                <p class="muted">${escapeHtml(test.subjectName || '')} | ${escapeHtml(formatTestType(test.type))} | ${escapeHtml(test.durationMinutes)} min</p>
                               </div>
                               <button class="cta-main" data-start-test="${test._id}" data-test-source="pending">Start Test</button>
                             </article>
@@ -2268,31 +3350,33 @@ async function renderStudentDashboard() {
         }
 
         ${
-          state.studentTab === 'messages'
+          state.studentTab === 'classes'
             ? `
               <section class="panel">
-                <h3>Message Teacher</h3>
-                <label for="studentMessageTeacherId">Choose Teacher</label>
-                <select id="studentMessageTeacherId">
-                  ${teachers
-                    .map(
-                      (teacher) =>
-                        `<option value="${teacher._id}" ${
-                          state.studentMessageTeacherId === teacher._id ? 'selected' : ''
-                        }>${escapeHtml(teacher.fullName)}</option>`
-                    )
-                    .join('')}
-                </select>
-
-                <label for="studentMessageText">Message</label>
-                <textarea id="studentMessageText" rows="4" placeholder="Type message"></textarea>
-                <button id="studentSendMessageBtn" class="cta-main">Send</button>
-                <p class="auth-note" id="studentMessageStatus"></p>
-              </section>
-
-              <section class="panel">
-                <h3>Conversation</h3>
-                ${messageFeedMarkup(conversation, user.id)}
+                <h3>Today's Classes</h3>
+                ${
+                  todayClasses.length
+                    ? todayClasses
+                        .map(
+                          (item) => `
+                            <article class="stack-item">
+                              <p><strong>${escapeHtml(item.title || 'Class')}</strong></p>
+                              <p class="muted">${escapeHtml(item.subjectName || '-')} | ${escapeHtml(item.startTime || '--:--')} - ${escapeHtml(item.endTime || '--:--')}</p>
+                              <p class="muted">Teacher: ${escapeHtml(item.teacherName || '-')}</p>
+                              ${item.description ? `<p>${escapeHtml(item.description)}</p>` : ''}
+                              ${
+                                item.resource
+                                  ? item.resource.source === 'file'
+                                    ? `<a href="${escapeHtml(item.resource.value)}" download="${escapeHtml(item.resource.title || 'resource')}">Download Class Resource</a>`
+                                    : `<a href="${escapeHtml(item.resource.value)}" target="_blank" rel="noreferrer">Open Class Resource</a>`
+                                  : ''
+                              }
+                            </article>
+                          `
+                        )
+                        .join('')
+                    : '<p class="muted">No classes scheduled for today.</p>'
+                }
               </section>
             `
             : ''
@@ -2325,8 +3409,8 @@ async function renderStudentDashboard() {
                       ${subjects
                         .map(
                           (subject) =>
-                            `<option value="${subject.id}" ${
-                              state.studentResourceSubjectId === subject.id ? 'selected' : ''
+                            `<option value="${subject._id || subject.id}" ${
+                              state.studentResourceSubjectId === (subject._id || subject.id) ? 'selected' : ''
                             }>${escapeHtml(subject.name)}</option>`
                         )
                         .join('')}
@@ -2427,7 +3511,7 @@ async function renderStudentDashboard() {
                                     <td>${item.scorePercent == null ? '-' : `${escapeHtml(item.scorePercent)}%`}</td>
                                     <td>
                                       ${
-                                        item.type === 'mcq'
+                                        item.type === 'mcq' || item.type === 'true_false'
                                           ? `<button class="mini-btn" data-answer-key-attempt="${item._id}" data-answer-key-title="${escapeHtml(
                                               item.test?.title || 'test'
                                             )}">Answer Key</button>`
@@ -2443,6 +3527,88 @@ async function renderStudentDashboard() {
                     </tbody>
                   </table>
                 </div>
+              </section>
+            `
+            : ''
+        }
+
+        ${
+          state.studentTab === 'planner'
+            ? `
+              <section class="panel">
+                <h3>My Study To-Do</h3>
+                <p class="muted">Plan your own day, tick tasks as done, and keep momentum.</p>
+                <div class="two-grid-form">
+                  <div>
+                    <label for="studentTodoTitle">Task</label>
+                    <input id="studentTodoTitle" type="text" placeholder="e.g. Revise chapter 3" />
+                  </div>
+                  <div>
+                    <label for="studentTodoDueDate">Due Date (optional)</label>
+                    <input id="studentTodoDueDate" type="date" />
+                  </div>
+                </div>
+                <button id="studentAddTodoBtn" class="cta-main">Add Task</button>
+                <p class="auth-note" id="studentTodoStatus"></p>
+              </section>
+
+              <section class="panel">
+                <div class="progress-row">
+                  <h3>Pending Tasks</h3>
+                  <strong>${pendingTodos.length}</strong>
+                </div>
+                <div class="todo-list">
+                  ${
+                    pendingTodos.length
+                      ? pendingTodos
+                          .map(
+                            (item) => `
+                              <article class="todo-item">
+                                <label class="todo-check">
+                                  <input type="checkbox" data-toggle-todo="${item.id}" />
+                                  <span>${escapeHtml(item.text)}</span>
+                                </label>
+                                <div class="todo-actions">
+                                  <small>${item.dueDate ? `Due: ${escapeHtml(item.dueDate)}` : ''}</small>
+                                  <button class="mini-btn danger" data-delete-todo="${item.id}">Delete</button>
+                                </div>
+                              </article>
+                            `
+                          )
+                          .join('')
+                      : '<p class="muted">No pending tasks. Add one above.</p>'
+                  }
+                </div>
+              </section>
+
+              <section class="panel">
+                <div class="progress-row">
+                  <h3>Completed</h3>
+                  <strong>${completedTodos.length}</strong>
+                </div>
+                <div class="todo-list done">
+                  ${
+                    completedTodos.length
+                      ? completedTodos
+                          .map(
+                            (item) => `
+                              <article class="todo-item done">
+                                <label class="todo-check">
+                                  <input type="checkbox" data-toggle-todo="${item.id}" checked />
+                                  <span>${escapeHtml(item.text)}</span>
+                                </label>
+                                <div class="todo-actions">
+                                  <small>${item.dueDate ? `Due: ${escapeHtml(item.dueDate)}` : ''}</small>
+                                  <button class="mini-btn danger" data-delete-todo="${item.id}">Delete</button>
+                                </div>
+                              </article>
+                            `
+                          )
+                          .join('')
+                      : '<p class="muted">No completed tasks yet.</p>'
+                  }
+                </div>
+                <button id="studentClearCompletedBtn" class="cta-soft">Clear Completed</button>
               </section>
             `
             : ''
@@ -2467,17 +3633,6 @@ async function renderStudentDashboard() {
 
   document.getElementById('logoutBtn').addEventListener('click', logout);
 
-  document
-    .getElementById('studentMarkNotificationsBtn')
-    .addEventListener('click', async () => {
-      try {
-        await markAllNotificationsRead('student');
-        void renderStudentDashboard();
-      } catch (error) {
-        alert(error.message);
-      }
-    });
-
   document.querySelectorAll('[data-start-test]').forEach((button) => {
     button.addEventListener('click', () => {
       const testId = button.getAttribute('data-start-test');
@@ -2488,47 +3643,14 @@ async function renderStudentDashboard() {
     });
   });
 
-  const studentMessageTeacherId = document.getElementById('studentMessageTeacherId');
-  if (studentMessageTeacherId) {
-    studentMessageTeacherId.addEventListener('change', (event) => {
-      state.studentMessageTeacherId = event.target.value;
-      void renderStudentDashboard();
-    });
-  }
-
-  const studentSendMessageBtn = document.getElementById('studentSendMessageBtn');
-  if (studentSendMessageBtn) {
-    studentSendMessageBtn.addEventListener('click', async () => {
-      const status = document.getElementById('studentMessageStatus');
-      status.textContent = 'Sending...';
-
-      try {
-        const toUserId = document.getElementById('studentMessageTeacherId').value;
-        const text = document.getElementById('studentMessageText').value.trim();
-        if (!toUserId || !text) {
-          status.textContent = 'Choose teacher and type message.';
-          return;
-        }
-
-        await api('/student/messages', {
-          method: 'POST',
-          body: JSON.stringify({ toUserId, text })
-        });
-
-        status.textContent = 'Message sent.';
-        document.getElementById('studentMessageText').value = '';
-        void renderStudentDashboard();
-      } catch (error) {
-        status.textContent = error.message;
-      }
-    });
-  }
-
   const studentResourceSearch = document.getElementById('studentResourceSearch');
   if (studentResourceSearch) {
     studentResourceSearch.addEventListener('input', (event) => {
-      state.studentResourceSearch = event.target.value;
-      void renderStudentDashboard();
+      const nextValue = event.target.value;
+      debounceByKey('student-resource-search', () => {
+        state.studentResourceSearch = nextValue;
+        void renderStudentDashboard();
+      });
     });
   }
 
@@ -2556,21 +3678,90 @@ async function renderStudentDashboard() {
     });
   }
 
+  const studentAddTodoBtn = document.getElementById('studentAddTodoBtn');
+  if (studentAddTodoBtn) {
+    studentAddTodoBtn.addEventListener('click', () => {
+      const status = document.getElementById('studentTodoStatus');
+      const title = sanitizeValue(document.getElementById('studentTodoTitle')?.value || '');
+      const dueDate = String(document.getElementById('studentTodoDueDate')?.value || '').trim();
+      if (!title) {
+        if (status) status.textContent = 'Task title is required.';
+        showToast('Task title is required.', 'error');
+        return;
+      }
+
+      const id =
+        (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+      const nextTodos = [
+        {
+          id,
+          text: title,
+          dueDate,
+          completed: false,
+          createdAt: new Date().toISOString()
+        },
+        ...todoItems
+      ];
+      saveStudentTodos(user.id || user._id, nextTodos);
+      showToast('Task added.', 'success');
+      void renderStudentDashboard();
+    });
+  }
+
+  document.querySelectorAll('[data-toggle-todo]').forEach((checkbox) => {
+    checkbox.addEventListener('change', (event) => {
+      const todoId = event.target.getAttribute('data-toggle-todo');
+      if (!todoId) return;
+      const nextTodos = todoItems.map((item) =>
+        item.id === todoId ? { ...item, completed: !item.completed } : item
+      );
+      saveStudentTodos(user.id || user._id, nextTodos);
+      void renderStudentDashboard();
+    });
+  });
+
+  document.querySelectorAll('[data-delete-todo]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const todoId = button.getAttribute('data-delete-todo');
+      if (!todoId) return;
+      const nextTodos = todoItems.filter((item) => item.id !== todoId);
+      saveStudentTodos(user.id || user._id, nextTodos);
+      showToast('Task deleted.', 'success');
+      void renderStudentDashboard();
+    });
+  });
+
+  const studentClearCompletedBtn = document.getElementById('studentClearCompletedBtn');
+  if (studentClearCompletedBtn) {
+    studentClearCompletedBtn.addEventListener('click', () => {
+      const nextTodos = todoItems.filter((item) => !item.completed);
+      saveStudentTodos(user.id || user._id, nextTodos);
+      showToast('Completed tasks cleared.', 'success');
+      void renderStudentDashboard();
+    });
+  }
+
   document.querySelectorAll('[data-answer-key-attempt]').forEach((button) => {
     button.addEventListener('click', async () => {
       const attemptId = button.getAttribute('data-answer-key-attempt');
       const title = button.getAttribute('data-answer-key-title') || 'test';
       if (!attemptId) return;
 
-      try {
-        const result = await api(`/student/tests/attempts/${attemptId}/answer-key`);
-        downloadTextFile(
-          `${String(title).replace(/\s+/g, '-').toLowerCase()}-answer-key.txt`,
-          buildAnswerKeyText(result.data)
-        );
-      } catch (error) {
-        alert(error.message);
-      }
+      await withButtonLoading(button, 'Downloading...', async () => {
+        try {
+          const result = await api(`/student/tests/attempts/${attemptId}/answer-key`);
+          downloadTextFile(
+            `${String(title).replace(/\s+/g, '-').toLowerCase()}-answer-key.txt`,
+            buildAnswerKeyText(result.data)
+          );
+          showToast('Answer key downloaded.', 'success');
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
     });
   });
 

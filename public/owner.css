@@ -1,23 +1,29 @@
 .owner-shell {
-  max-width: 920px;
+  max-width: 1220px;
   margin: 0 auto;
-  padding: 24px 14px 36px;
+  padding: 22px 14px 36px;
+  display: grid;
+  gap: 14px;
+}
+
+.owner-dashboard {
   display: grid;
   gap: 14px;
 }
 
 .owner-card {
   background: #ffffff;
-  border: 1px solid #d5e7f7;
+  border: 1px solid #d2e5f8;
   border-radius: 16px;
   padding: 16px;
-  box-shadow: 0 10px 24px rgba(26, 106, 178, 0.09);
+  box-shadow: 0 10px 24px rgba(18, 95, 163, 0.08);
 }
 
 .owner-card h1,
-.owner-card h2 {
+.owner-card h2,
+.owner-card h3 {
   margin: 0;
-  color: #114776;
+  color: #104779;
   font-family: 'Sora', 'Manrope', sans-serif;
 }
 
@@ -29,23 +35,92 @@
   margin-top: 10px;
 }
 
-.owner-list {
-  margin-top: 10px;
-  display: grid;
+.remember-row {
+  display: inline-flex;
+  align-items: center;
   gap: 8px;
-}
-
-.owner-item {
-  border: 1px solid #dceaf7;
-  border-radius: 12px;
-  padding: 10px;
-  background: #f7fbff;
-}
-
-.owner-item p {
-  margin: 4px 0 0;
-  color: #4d6d8a;
+  margin: 10px 0 6px;
+  color: #335674;
   font-size: 0.9rem;
+}
+
+.owner-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.owner-top-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.owner-summary-grid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.owner-summary-tile {
+  border: 1px solid #dceaf8;
+  border-radius: 12px;
+  background: linear-gradient(160deg, #f8fcff 0%, #eef7ff 100%);
+  padding: 12px;
+}
+
+.owner-summary-label {
+  font-size: 0.84rem;
+  color: #4e6b86;
+}
+
+.owner-summary-value {
+  margin-top: 4px;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #104779;
+}
+
+.owner-analytics-two-col {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.owner-analytics-card {
+  border: 1px solid #dceaf8;
+  border-radius: 12px;
+  background: linear-gradient(160deg, #fafdff 0%, #f1f8ff 100%);
+  padding: 12px;
+}
+
+.owner-analytics-card h4 {
+  margin: 0 0 8px;
+  color: #104779;
+  font-family: 'Sora', 'Manrope', sans-serif;
+}
+
+.owner-mini-list {
+  display: grid;
+  gap: 6px;
+}
+
+.owner-mini-list p {
+  margin: 0;
+  color: #35567a;
+  font-size: 0.88rem;
+}
+
+.owner-mini-list strong {
+  color: #104779;
+}
+
+.owner-password-form {
+  max-width: 460px;
 }
 
 .credential-preview {
@@ -57,4 +132,118 @@
   color: #10497d;
   white-space: pre-wrap;
   word-break: break-word;
+  min-height: 78px;
+}
+
+.owner-table-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.owner-table-header input {
+  width: 320px;
+  max-width: 100%;
+}
+
+.owner-table-help {
+  margin: 8px 0 12px;
+  color: #4e6b86;
+}
+
+.owner-table-wrap {
+  border: 1px solid #dceaf8;
+  border-radius: 12px;
+  overflow: auto;
+}
+
+.owner-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 1320px;
+}
+
+.owner-table th,
+.owner-table td {
+  padding: 10px;
+  border-bottom: 1px solid #e4eff9;
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+.owner-table th {
+  position: sticky;
+  top: 0;
+  background: #edf5fd;
+  color: #104779;
+  z-index: 1;
+}
+
+.owner-table td input,
+.owner-table td select {
+  width: 100%;
+  min-width: 84px;
+  border-radius: 8px;
+  border: 1px solid #cae0f3;
+  background: #f9fcff;
+  color: #133e66;
+  padding: 6px 8px;
+  font-size: 0.85rem;
+}
+
+.owner-table td code {
+  display: inline-block;
+  padding: 3px 6px;
+  border-radius: 8px;
+  background: #eff6fc;
+  color: #104779;
+}
+
+.owner-table .status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.77rem;
+  font-weight: 600;
+}
+
+.owner-table .status-pill.active {
+  background: #e6f7ef;
+  color: #128752;
+}
+
+.owner-table .status-pill.inactive {
+  background: #fdeceb;
+  color: #b53c33;
+}
+
+.owner-row-actions {
+  display: grid;
+  gap: 6px;
+  min-width: 130px;
+}
+
+.owner-row-actions button {
+  width: 100%;
+}
+
+@media (max-width: 960px) {
+  .owner-topbar {
+    flex-direction: column;
+  }
+
+  .owner-top-actions {
+    justify-content: flex-start;
+  }
+
+  .owner-table-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .owner-analytics-two-col {
+    grid-template-columns: 1fr;
+  }
 }
