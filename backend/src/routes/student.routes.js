@@ -1,7 +1,15 @@
 import { Router } from 'express';
-import { dashboard, syllabi, testHistory } from '../controllers/student.controller.js';
+import {
+  dashboard,
+  studentViewSyllabus,
+  syllabi,
+  testHistory
+} from '../controllers/student.controller.js';
 import { studentTodayClasses } from '../controllers/classPlan.controller.js';
-import { studentListResources } from '../controllers/resource.controller.js';
+import {
+  studentListResources,
+  studentViewResource
+} from '../controllers/resource.controller.js';
 import {
   studentAttemptAnswerKey,
   studentSubmitAttempt,
@@ -23,7 +31,9 @@ router.get('/classes/today', studentTodayClasses);
 router.post('/tests/:testId/attempt', studentSubmitAttempt);
 router.get('/tests/attempts/:attemptId/answer-key', studentAttemptAnswerKey);
 router.get('/resources', studentListResources);
+router.get('/resources/:resourceId/view', studentViewResource);
 router.get('/syllabus', syllabi);
+router.get('/syllabus/:subjectId/view', studentViewSyllabus);
 router.get('/notifications', myNotifications);
 router.post('/notifications/read', markNotificationsRead);
 

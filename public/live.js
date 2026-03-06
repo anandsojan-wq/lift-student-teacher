@@ -5075,15 +5075,72 @@ function openStudentAnswerKeyViewer(payload, title = 'Answer Key') {
   bindStudentAnswerKeyViewerEvents();
 }
 
+async function renderStudentProtectedPdfDocument(url) {
+  const container = document.getElementById('studentPdfCanvasRoot');
+  const status = document.getElementById('studentPdfStatus');
+  if (!container || !status) return;
+
+  container.innerHTML = '';
+  status.textContent = 'Loading PDF...';
+
+  if (!window.pdfjsLib?.getDocument) {
+    status.textContent = 'PDF viewer is unavailable in this browser.';
+    return;
+  }
+
+  try {
+    const response = await fetch(String(url || '').trim(), {
+      method: 'GET',
+      credentials: 'include',
+      cache: 'no-store'
+    });
+    if (!response.ok) {
+      throw new Error('Unable to open PDF.');
+    }
+
+    const pdfBytes = new Uint8Array(await response.arrayBuffer());
+    const pdf = await window.pdfjsLib.getDocument({ data: pdfBytes }).promise;
+    status.textContent = `${pdf.numPages} page(s) loaded`;
+
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      const baseViewport = page.getViewport({ scale: 1 });
+      const targetWidth = Math.max(320, (container.clientWidth || 760) - 24);
+      const scale = Math.min(1.5, Math.max(0.9, targetWidth / baseViewport.width));
+      const viewport = page.getViewport({ scale });
+      const pageShell = document.createElement('section');
+      pageShell.className = 'student-pdf-page';
+      const label = document.createElement('p');
+      label.className = 'student-pdf-page-label';
+      label.textContent = `Page ${pageNumber}`;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      pageShell.appendChild(label);
+      pageShell.appendChild(canvas);
+      container.appendChild(pageShell);
+
+      const context = canvas.getContext('2d');
+      if (!context) continue;
+      await page.render({
+        canvasContext: context,
+        viewport
+      }).promise;
+    }
+  } catch (error) {
+    status.textContent = error.message || 'Unable to render PDF.';
+  }
+}
+
 function studentResourceActionMarkup(resource) {
-  if (!resource || !resource.value) return '<span class="muted">No file</span>';
-  if (isStudentPdfResource(resource)) {
+  if (!resource) return '<span class="muted">No file</span>';
+  if (isStudentPdfResource(resource) && resource.viewUrl) {
     return `
       <button
         type="button"
         class="mini-btn"
         data-open-student-pdf="1"
-        data-pdf-url="${escapeHtml(resource.value)}"
+        data-pdf-url="${escapeHtml(resource.viewUrl)}"
         data-pdf-title="${escapeHtml(resource.title || 'PDF Resource')}"
       >
         View in PDF Viewer
@@ -5091,6 +5148,7 @@ function studentResourceActionMarkup(resource) {
     `;
   }
 
+  if (!resource.value) return '<span class="muted">No file</span>';
   return `<a href="${escapeHtml(resource.value)}" target="_blank" rel="noreferrer">Open Resource</a>`;
 }
 
@@ -5493,8 +5551,14 @@ async function renderStudentDashboard() {
                                 <td>${escapeHtml(item.name)}</td>
                                 <td>${escapeHtml(item.teacherName || '-')}</td>
                                 <td>${
-                                  item.syllabusPdfUrl
-                                    ? `<a href="${escapeHtml(item.syllabusPdfUrl)}" target="_blank" rel="noreferrer">Open PDF</a>`
+                                  item.viewUrl
+                                    ? `<button
+                                        type="button"
+                                        class="mini-btn"
+                                        data-open-student-pdf="1"
+                                        data-pdf-url="${escapeHtml(item.viewUrl)}"
+                                        data-pdf-title="${escapeHtml(item.name || 'Syllabus')}"
+                                      >View PDF</button>`
                                     : '-'
                                 }</td>
                               </tr>
@@ -5657,11 +5721,8 @@ async function renderStudentDashboard() {
                   <button class="mini-btn" type="button" data-close-student-pdf>Close</button>
                 </div>
                 <p class="muted">Protected view mode enabled. Download is disabled in this interface.</p>
-                <iframe
-                  class="pdf-viewer resource-pdf-viewer"
-                  src="${escapeHtml(buildStudentPdfViewerSrc(state.studentPdfViewer.url))}"
-                  title="Student PDF Viewer"
-                ></iframe>
+                <p class="muted" id="studentPdfStatus">Loading PDF...</p>
+                <div class="pdf-viewer resource-pdf-viewer student-pdf-canvas-root" id="studentPdfCanvasRoot"></div>
               </div>
             </section>
           `
@@ -5781,6 +5842,10 @@ async function renderStudentDashboard() {
       void renderStudentDashboard();
     });
   });
+
+  if (state.studentPdfViewer?.url) {
+    void renderStudentProtectedPdfDocument(state.studentPdfViewer.url);
+  }
 
   const studentAddTodoBtn = document.getElementById('studentAddTodoBtn');
   if (studentAddTodoBtn) {

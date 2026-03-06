@@ -4,6 +4,7 @@ import { StudentProfile } from '../models/StudentProfile.js';
 import { Subject } from '../models/Subject.js';
 import { User } from '../models/User.js';
 import { trackAnalyticsEvent } from '../services/analytics.service.js';
+import { resolveInlineAsset, sendInlineAsset } from '../utils/protected-file.js';
 import { badRequest, created, notFound, ok } from '../utils/http.js';
 import { notifyUsers } from '../utils/notify.js';
 import { escapeRegExp, toKeywordArray } from '../utils/text.js';
@@ -72,6 +73,20 @@ function buildSearchQuery(q) {
   return {
     $or: [{ title: regex }, { value: regex }, { keywords: regex }]
   };
+}
+
+function isStudentProtectedDocument(resource) {
+  return ['pdf', 'ebook'].includes(String(resource?.resourceType || '').toLowerCase());
+}
+
+function studentResourceViewUrl(resourceId) {
+  return `/api/student/resources/${resourceId}/view`;
+}
+
+function buildProtectedResourceFileName(resource) {
+  const title = String(resource?.title || 'resource').trim() || 'resource';
+  const ext = String(resource?.resourceType || '').toLowerCase() === 'ebook' ? '.epub' : '.pdf';
+  return title.toLowerCase().endsWith(ext) ? title : `${title}${ext}`;
 }
 
 export async function teacherCreateResource(req, res) {
@@ -207,8 +222,47 @@ export async function studentListResources(req, res) {
   const enriched = resources.map((resource) => ({
     ...resource,
     subjectName: subjectMap.get(resource.subjectId.toString()) || '',
-    teacherName: teacherMap.get(resource.teacherId.toString()) || ''
+    teacherName: teacherMap.get(resource.teacherId.toString()) || '',
+    ...(isStudentProtectedDocument(resource)
+      ? {
+          value: '',
+          viewUrl: studentResourceViewUrl(resource._id)
+        }
+      : {})
   }));
 
   return ok(res, { resources: enriched });
+}
+
+export async function studentViewResource(req, res) {
+  const profile = await StudentProfile.findOne({ userId: req.auth.userId })
+    .select('subjects teacherId')
+    .lean();
+  if (!profile?.subjects?.length) return notFound(res, 'Resource not found.');
+
+  const query = {
+    _id: req.params.resourceId,
+    institutionId: req.auth.institutionId,
+    subjectId: { $in: profile.subjects }
+  };
+  if (profile.teacherId) {
+    query.teacherId = profile.teacherId;
+  }
+
+  const resource = await Resource.findOne(query).lean();
+  if (!resource || !isStudentProtectedDocument(resource)) {
+    return notFound(res, 'Resource not found.');
+  }
+
+  try {
+    const asset = await resolveInlineAsset({
+      sourceUrl: resource.value,
+      fallbackFileName: buildProtectedResourceFileName(resource),
+      fallbackContentType:
+        resource.resourceType === 'ebook' ? 'application/epub+zip' : 'application/pdf'
+    });
+    return sendInlineAsset(res, asset);
+  } catch (error) {
+    return badRequest(res, 'Unable to open this resource right now.');
+  }
 }

@@ -1509,6 +1509,38 @@ select:focus {
   background: #fff;
 }
 
+.student-pdf-canvas-root {
+  padding: 10px;
+  overflow: auto;
+  background:
+    linear-gradient(180deg, rgba(239, 247, 255, 0.92) 0%, rgba(229, 241, 252, 0.92) 100%),
+    radial-gradient(circle at top, rgba(66, 153, 225, 0.08), transparent 42%);
+}
+
+.student-pdf-page {
+  margin: 0 auto 14px;
+  max-width: 100%;
+  border: 1px solid #d4e5f6;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 10px 22px rgba(16, 86, 150, 0.08);
+  padding: 8px;
+}
+
+.student-pdf-page-label {
+  margin: 0 0 8px;
+  color: #3a5f82;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.student-pdf-page canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+
 .video-viewer {
   width: 100%;
   min-height: 250px;

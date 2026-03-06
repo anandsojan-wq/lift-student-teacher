@@ -108,6 +108,10 @@ function serializePlan(plan, { subjectMap, teacherMap, resourceMap } = {}) {
   };
 }
 
+function isStudentProtectedDocument(resource) {
+  return ['pdf', 'ebook'].includes(String(resource?.resourceType || '').toLowerCase());
+}
+
 export async function teacherCreateClassPlan(req, res) {
   const parsed = createClassPlanSchema.safeParse(req.body || {});
   if (!parsed.success) {
@@ -267,6 +271,16 @@ export async function studentTodayClasses(req, res) {
   const resourceMap = new Map(resources.map((resource) => [String(resource._id), resource]));
 
   return ok(res, {
-    classes: plans.map((plan) => serializePlan(plan, { subjectMap, teacherMap, resourceMap }))
+    classes: plans.map((plan) => {
+      const serialized = serializePlan(plan, { subjectMap, teacherMap, resourceMap });
+      if (serialized.resource && isStudentProtectedDocument(serialized.resource)) {
+        serialized.resource = {
+          ...serialized.resource,
+          value: '',
+          viewUrl: `/api/student/resources/${serialized.resource.id}/view`
+        };
+      }
+      return serialized;
+    })
   });
 }

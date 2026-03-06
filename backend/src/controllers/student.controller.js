@@ -3,7 +3,8 @@ import { StudentProfile } from '../models/StudentProfile.js';
 import { Subject } from '../models/Subject.js';
 import { Test } from '../models/Test.js';
 import { User } from '../models/User.js';
-import { ok } from '../utils/http.js';
+import { resolveInlineAsset, sendInlineAsset } from '../utils/protected-file.js';
+import { badRequest, notFound, ok } from '../utils/http.js';
 
 export async function dashboard(req, res) {
   const [profile, attemptCount] = await Promise.all([
@@ -84,7 +85,43 @@ export async function syllabi(req, res) {
   return ok(res, {
     syllabi: subjects.map((subject) => ({
       ...subject,
+      syllabusPdfUrl: '',
+      viewUrl: subject.syllabusPdfUrl ? `/api/student/syllabus/${subject._id}/view` : '',
       teacherName: subject.teacherId ? teacherMap.get(subject.teacherId.toString()) || '' : ''
     }))
   });
+}
+
+export async function studentViewSyllabus(req, res) {
+  const profile = await StudentProfile.findOne({ userId: req.auth.userId })
+    .select('subjects')
+    .lean();
+  if (!profile?.subjects?.length) return notFound(res, 'Syllabus not found.');
+
+  const subject = await Subject.findOne({
+    _id: req.params.subjectId,
+    institutionId: req.auth.institutionId
+  })
+    .select('name syllabusPdfUrl syllabusPdfName')
+    .lean();
+
+  const isAllowedSubject = profile.subjects.some(
+    (subjectId) => subjectId?.toString() === String(req.params.subjectId || '')
+  );
+
+  if (!subject || !isAllowedSubject || !subject.syllabusPdfUrl) {
+    return notFound(res, 'Syllabus not found.');
+  }
+
+  try {
+    const asset = await resolveInlineAsset({
+      sourceUrl: subject.syllabusPdfUrl,
+      fallbackFileName:
+        subject.syllabusPdfName || `${String(subject.name || 'syllabus').trim() || 'syllabus'}.pdf`,
+      fallbackContentType: 'application/pdf'
+    });
+    return sendInlineAsset(res, asset);
+  } catch (error) {
+    return badRequest(res, 'Unable to open this syllabus right now.');
+  }
 }
