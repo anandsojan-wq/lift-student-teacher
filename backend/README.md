@@ -10,9 +10,44 @@ npm run dev
 npm run seed:super-admin
 ```
 
+## Snapshot Backup (Per Institution)
+
+Create a JSON backup snapshot:
+
+```bash
+npm run backup:institution -- LIFT-DEMO-1001
+```
+
+Optional output file path:
+
+```bash
+npm run backup:institution -- LIFT-DEMO-1001 ./backups/demo.json
+```
+
 ## Health
 
 - `GET /api/health`
+- `GET /api/ready` (returns `503` if DB is not connected)
+
+## SaaS Hardening Included
+
+- Request IDs on every API response (`x-request-id` header + `requestId` field)
+- Global, auth, and write rate limiting
+- CORS allowlist + Vercel/local origin support
+- Institution access guard:
+  - blocks cancelled, inactive, or expired subscriptions
+  - applies to login and all protected routes (except super admin)
+- Graceful shutdown handling (`SIGINT`, `SIGTERM`)
+
+## Key Production Env Vars
+
+- `JWT_SECRET` (must be strong)
+- `CORS_ORIGIN`
+- `ENFORCE_INSTITUTION_ACCESS=true`
+- `RATE_LIMIT_WINDOW_MS=900000`
+- `RATE_LIMIT_MAX=400`
+- `AUTH_RATE_LIMIT_MAX=25`
+- `WRITE_RATE_LIMIT_MAX=180`
 
 ## Auth
 
@@ -32,6 +67,8 @@ npm run seed:super-admin
 - `GET /api/admin/subjects`
 - `GET /api/admin/teachers`
 - `POST /api/admin/teachers`
+- `POST /api/admin/teachers/:teacherId/reset-password`
+- `DELETE /api/admin/teachers/:teacherId`
 - `GET /api/admin/students`
 - `GET /api/admin/users`
 - `GET /api/admin/messages?userId=<id>`

@@ -10,7 +10,7 @@ const attemptSchema = new mongoose.Schema(
     studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     testId: { type: mongoose.Schema.Types.ObjectId, ref: 'Test', required: true },
-    type: { type: String, enum: ['mcq', 'long', 'true_false', 'short'], required: true },
+    type: { type: String, enum: ['mcq', 'long'], required: true },
     assignedMarks: { type: Number, default: null },
     scorePercent: { type: Number, default: null },
     evaluatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

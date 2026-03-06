@@ -20,3 +20,8 @@ export async function connectDb() {
     family: 4
   });
 }
+
+export async function disconnectDb() {
+  if (mongoose.connection.readyState === 0) return;
+  await mongoose.disconnect();
+}

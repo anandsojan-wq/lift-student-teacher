@@ -1,12 +1,9 @@
 import { Router } from 'express';
 import {
   createStudent,
-  createSubject,
   deleteStudent,
-  deleteSubject,
   listMyStudents,
-  listMySubjects,
-  updateSubjectSyllabus
+  listMySubjects
 } from '../controllers/teacher.controller.js';
 import {
   teacherCreateClassPlan,
@@ -20,6 +17,7 @@ import {
 } from '../controllers/resource.controller.js';
 import {
   teacherGradeAttempt,
+  teacherLiveTestsStats,
   teacherListAssessments,
   teacherCreateTest,
   teacherListTests
@@ -34,9 +32,6 @@ const router = Router();
 
 router.use(requireAuth, requireRole('teacher'));
 router.get('/subjects', listMySubjects);
-router.post('/subjects', createSubject);
-router.patch('/subjects/:subjectId/syllabus', updateSubjectSyllabus);
-router.delete('/subjects/:subjectId', deleteSubject);
 router.get('/students', listMyStudents);
 router.post('/students', createStudent);
 router.delete('/students/:studentId', deleteStudent);
@@ -44,6 +39,7 @@ router.get('/resources', teacherListResources);
 router.post('/resources', teacherCreateResource);
 router.delete('/resources/:resourceId', teacherDeleteResource);
 router.get('/tests', teacherListTests);
+router.get('/tests/live-stats', teacherLiveTestsStats);
 router.post('/tests', teacherCreateTest);
 router.get('/assessments', teacherListAssessments);
 router.patch('/assessments/:attemptId/grade', teacherGradeAttempt);

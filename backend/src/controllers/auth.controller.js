@@ -4,7 +4,8 @@ import { env } from '../config/env.js';
 import { Institution } from '../models/Institution.js';
 import { User } from '../models/User.js';
 import { trackAnalyticsEvent } from '../services/analytics.service.js';
-import { badRequest, created, notFound, ok, unauthorized } from '../utils/http.js';
+import { badRequest, created, forbidden, notFound, ok, unauthorized } from '../utils/http.js';
+import { getInstitutionAccessStatus } from '../utils/institution-access.js';
 
 const bootstrapSchema = z.object({
   institutionName: z.string().min(2),
@@ -18,7 +19,8 @@ const bootstrapSchema = z.object({
 const loginSchema = z.object({
   institutionId: z.string().min(1),
   username: z.string().min(1),
-  password: z.string().min(1)
+  password: z.string().min(1),
+  rememberMe: z.boolean().optional()
 });
 
 const changePasswordSchema = z.object({
@@ -36,6 +38,56 @@ function signAccessToken(user) {
     env.jwtSecret,
     { expiresIn: env.jwtExpiresIn }
   );
+}
+
+function parseDurationMs(value, fallbackMs = 7 * 24 * 60 * 60 * 1000) {
+  const input = String(value || '').trim();
+  if (!input) return fallbackMs;
+  if (/^\d+$/.test(input)) return Number(input) * 1000;
+
+  const match = input.match(/^(\d+)([smhd])$/i);
+  if (!match) return fallbackMs;
+
+  const amount = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  const unitMs = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000
+  };
+
+  return amount * (unitMs[unit] || fallbackMs);
+}
+
+function isSecureRequest(req) {
+  if (req.secure) return true;
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').toLowerCase();
+  return forwardedProto.includes('https') || env.nodeEnv === 'production';
+}
+
+function authCookieOptions(req, rememberMe = false) {
+  const options = {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: isSecureRequest(req),
+    path: '/'
+  };
+
+  if (rememberMe) {
+    options.maxAge = parseDurationMs(env.jwtExpiresIn);
+  }
+
+  return options;
+}
+
+function clearAuthCookie(req, res) {
+  res.clearCookie('token', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: isSecureRequest(req),
+    path: '/'
+  });
 }
 
 export async function bootstrap(req, res) {
@@ -67,6 +119,7 @@ export async function bootstrap(req, res) {
     role: 'admin',
     username: adminUsername.toLowerCase(),
     passwordHash,
+    temporaryPassword: adminPassword,
     fullName: adminName,
     email: adminEmail || ''
   });
@@ -104,21 +157,52 @@ export async function login(req, res) {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid login payload.');
 
-  const { institutionId, username, password } = parsed.data;
-  const institution = await Institution.findOne({ institutionId, isActive: true }).lean();
+  const { institutionId, username, password, rememberMe = false } = parsed.data;
+  const institution = await Institution.findOne({ institutionId }).lean();
   if (!institution) return notFound(res, 'Institution not found.');
+
+  if (env.enforceInstitutionAccess) {
+    const access = getInstitutionAccessStatus(institution);
+    if (!access.allowed) return forbidden(res, access.reason);
+  }
 
   const user = await User.findOne({
     institutionId: institution._id,
     username: username.toLowerCase(),
     isActive: true
   });
-  if (!user) return unauthorized(res, 'Invalid credentials.');
+  if (!user) {
+    await trackAnalyticsEvent({
+      institutionId: institution._id,
+      role: 'system',
+      eventType: 'login_failed',
+      stage: 'security',
+      metadata: {
+        username: username.toLowerCase(),
+        reason: 'user_not_found'
+      }
+    });
+    return unauthorized(res, 'Invalid credentials.');
+  }
 
   const valid = await user.verifyPassword(password);
-  if (!valid) return unauthorized(res, 'Invalid credentials.');
+  if (!valid) {
+    await trackAnalyticsEvent({
+      institutionId: institution._id,
+      userId: user._id,
+      role: user.role,
+      eventType: 'login_failed',
+      stage: 'security',
+      metadata: {
+        username: user.username,
+        reason: 'password_mismatch'
+      }
+    });
+    return unauthorized(res, 'Invalid credentials.');
+  }
 
   const token = signAccessToken(user);
+  res.cookie('token', token, authCookieOptions(req, rememberMe));
 
   await trackAnalyticsEvent({
     institutionId: user.institutionId,
@@ -132,7 +216,6 @@ export async function login(req, res) {
   });
 
   return ok(res, {
-    token,
     user: {
       id: user._id,
       role: user.role,
@@ -141,6 +224,11 @@ export async function login(req, res) {
       mustChangePassword: user.mustChangePassword
     }
   });
+}
+
+export async function logout(req, res) {
+  clearAuthCookie(req, res);
+  return ok(res, {}, 'Signed out successfully.');
 }
 
 export async function me(req, res) {
@@ -180,6 +268,7 @@ export async function changePassword(req, res) {
   if (!valid) return unauthorized(res, 'Current password is incorrect.');
 
   user.passwordHash = await User.hashPassword(newPassword);
+  user.temporaryPassword = '';
   user.mustChangePassword = false;
   await user.save();
 

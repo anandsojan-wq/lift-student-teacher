@@ -18,6 +18,7 @@ const userSchema = new mongoose.Schema(
     fullName: { type: String, required: true, trim: true },
     email: { type: String, default: '', trim: true, lowercase: true },
     phone: { type: String, default: '', trim: true },
+    temporaryPassword: { type: String, default: '', trim: true },
     profileImageUrl: { type: String, default: '' },
     mustChangePassword: { type: Boolean, default: false },
     isActive: { type: Boolean, default: true }

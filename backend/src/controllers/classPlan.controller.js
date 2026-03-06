@@ -120,8 +120,7 @@ export async function teacherCreateClassPlan(req, res) {
 
   const subject = await Subject.findOne({
     _id: payload.subjectId,
-    institutionId: req.auth.institutionId,
-    teacherId: req.auth.userId
+    institutionId: req.auth.institutionId
   }).lean();
   if (!subject) return notFound(res, 'Subject not found.');
 

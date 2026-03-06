@@ -6,6 +6,11 @@ const institutionSchema = new mongoose.Schema(
     institutionId: { type: String, required: true, unique: true, trim: true },
     cityCode: { type: String, default: 'GEN', trim: true, uppercase: true },
     planType: { type: String, enum: ['trial', 'paid'], default: 'trial' },
+    subscriptionLength: {
+      type: String,
+      enum: ['6_months', '1_year', 'lifetime'],
+      default: '1_year'
+    },
     paymentStatus: {
       type: String,
       enum: ['pending', 'paid', 'cancelled'],

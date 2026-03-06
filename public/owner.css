@@ -200,6 +200,13 @@
   color: #104779;
 }
 
+.owner-table td small {
+  display: block;
+  margin-top: 4px;
+  color: #4e6b86;
+  font-size: 0.78rem;
+}
+
 .owner-table .status-pill {
   display: inline-flex;
   align-items: center;
@@ -227,6 +234,20 @@
 
 .owner-row-actions button {
   width: 100%;
+  min-height: 40px;
+}
+
+.owner-shell .cta-main,
+.owner-shell .cta-soft,
+.owner-shell .owner-row-actions button {
+  transition: transform 0.14s ease, box-shadow 0.14s ease, filter 0.14s ease;
+  will-change: transform;
+}
+
+.owner-shell .cta-main:active,
+.owner-shell .cta-soft:active,
+.owner-shell .owner-row-actions button:active {
+  transform: scale(0.985);
 }
 
 @media (max-width: 960px) {
@@ -245,5 +266,10 @@
 
   .owner-analytics-two-col {
     grid-template-columns: 1fr;
+  }
+
+  .owner-card {
+    border-radius: 14px;
+    padding: 14px;
   }
 }

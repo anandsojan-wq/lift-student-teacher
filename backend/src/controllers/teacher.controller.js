@@ -6,40 +6,6 @@ import { trackAnalyticsEvent } from '../services/analytics.service.js';
 import { triggerAutomation } from '../services/automation.service.js';
 import { badRequest, notFound, ok } from '../utils/http.js';
 
-function isHttpUrl(value) {
-  try {
-    const parsed = new URL(String(value || ''));
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-  } catch (error) {
-    return false;
-  }
-}
-
-function isDataUrl(value) {
-  return /^data:[a-z0-9/+.-]+;base64,[a-z0-9+/=\s]+$/i.test(String(value || ''));
-}
-
-const syllabusValueSchema = z
-  .string()
-  .trim()
-  .min(1, 'Syllabus PDF is required.')
-  .max(4_500_000, 'Syllabus PDF is too large. Please upload a smaller file.')
-  .refine(
-    (value) => isHttpUrl(value) || isDataUrl(value),
-    'Syllabus must be a PDF upload or a valid URL.'
-  );
-
-const createSubjectSchema = z.object({
-  name: z.string().trim().min(2, 'Subject name must be at least 2 characters.'),
-  syllabusPdfUrl: syllabusValueSchema,
-  syllabusPdfName: z.string().trim().max(180).optional().or(z.literal(''))
-});
-
-const updateSyllabusSchema = z.object({
-  syllabusPdfUrl: syllabusValueSchema,
-  syllabusPdfName: z.string().trim().max(180).optional().or(z.literal(''))
-});
-
 const createStudentSchema = z.object({
   fullName: z.string().min(2),
   username: z.string().min(3),
@@ -51,73 +17,14 @@ const createStudentSchema = z.object({
   subjectIds: z.array(z.string().min(1)).min(1)
 });
 
-export async function createSubject(req, res) {
-  const parsed = createSubjectSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return badRequest(res, parsed.error.issues[0]?.message || 'Invalid subject payload.');
-  }
-
-  const { name, syllabusPdfUrl, syllabusPdfName } = parsed.data;
-  const existing = await Subject.findOne({
-    institutionId: req.auth.institutionId,
-    teacherId: req.auth.userId,
-    name
-  }).lean();
-  if (existing) return badRequest(res, 'Subject already exists.');
-
-  const subject = await Subject.create({
-    institutionId: req.auth.institutionId,
-    teacherId: req.auth.userId,
-    name,
-    syllabusPdfUrl: syllabusPdfUrl || '',
-    syllabusPdfName: syllabusPdfName || ''
-  });
-
-  await trackAnalyticsEvent({
-    institutionId: req.auth.institutionId,
-    userId: req.auth.userId,
-    role: 'teacher',
-    eventType: 'subject_created',
-    stage: 'activation',
-    metadata: {
-      subjectId: subject._id.toString(),
-      subjectName: subject.name
-    }
-  });
-
-  return ok(res, { subject }, 'Subject created.');
-}
-
 export async function listMySubjects(req, res) {
   const subjects = await Subject.find({
-    institutionId: req.auth.institutionId,
-    teacherId: req.auth.userId
+    institutionId: req.auth.institutionId
   })
-    .sort({ createdAt: -1 })
+    .sort({ name: 1, createdAt: -1 })
     .lean();
 
   return ok(res, { subjects });
-}
-
-export async function updateSubjectSyllabus(req, res) {
-  const parsed = updateSyllabusSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return badRequest(res, parsed.error.issues[0]?.message || 'Invalid syllabus payload.');
-  }
-
-  const subjectId = String(req.params.subjectId || '').trim();
-  const subject = await Subject.findOne({
-    _id: subjectId,
-    institutionId: req.auth.institutionId,
-    teacherId: req.auth.userId
-  });
-  if (!subject) return notFound(res, 'Subject not found.');
-
-  subject.syllabusPdfUrl = parsed.data.syllabusPdfUrl;
-  subject.syllabusPdfName = parsed.data.syllabusPdfName || subject.syllabusPdfName || '';
-  await subject.save();
-
-  return ok(res, { subject }, 'Syllabus updated.');
 }
 
 export async function createStudent(req, res) {
@@ -134,14 +41,13 @@ export async function createStudent(req, res) {
 
   const allowedSubjects = await Subject.find({
     _id: { $in: subjectIds },
-    institutionId: req.auth.institutionId,
-    teacherId: req.auth.userId
+    institutionId: req.auth.institutionId
   })
     .select('_id')
     .lean();
 
   if (allowedSubjects.length !== subjectIds.length) {
-    return badRequest(res, 'One or more subjects are invalid for this teacher.');
+    return badRequest(res, 'One or more subjects are invalid for this institution.');
   }
 
   const passwordHash = await User.hashPassword(password);
@@ -153,6 +59,7 @@ export async function createStudent(req, res) {
     passwordHash,
     email: email || '',
     phone: phone || '',
+    temporaryPassword: password,
     mustChangePassword: false
   });
 
@@ -210,7 +117,8 @@ export async function createStudent(req, res) {
       fullName: student.fullName,
       username: student.username,
       email: student.email,
-      phone: student.phone
+      phone: student.phone,
+      temporaryPassword: student.temporaryPassword || ''
     },
     profile
   }, 'Student created.');
@@ -220,23 +128,15 @@ export async function listMyStudents(req, res) {
   const subjectId = req.query.subjectId || '';
   const q = (req.query.q || '').trim();
 
-  const teacherSubjects = await Subject.find({
-    institutionId: req.auth.institutionId,
-    teacherId: req.auth.userId
-  })
-    .select('_id')
-    .lean();
-
-  const subjectIds = teacherSubjects.map((s) => s._id);
-  if (subjectIds.length === 0) return ok(res, { students: [] });
-
   const profileQuery = {
-    teacherId: req.auth.userId,
-    subjects: { $in: subjectIds }
+    teacherId: req.auth.userId
   };
-  if (subjectId) profileQuery.subjects = subjectId;
+  if (subjectId) {
+    profileQuery.subjects = subjectId;
+  }
 
   const profiles = await StudentProfile.find(profileQuery).lean();
+  if (!profiles.length) return ok(res, { students: [] });
   const userIds = profiles.map((p) => p.userId);
 
   const userQuery = {
@@ -276,23 +176,6 @@ export async function listMyStudents(req, res) {
       subjects: profileMap.get(student._id.toString()) || []
     }))
   });
-}
-
-export async function deleteSubject(req, res) {
-  const subjectId = req.params.subjectId;
-  const subject = await Subject.findOne({
-    _id: subjectId,
-    institutionId: req.auth.institutionId,
-    teacherId: req.auth.userId
-  });
-  if (!subject) return notFound(res, 'Subject not found.');
-
-  await StudentProfile.updateMany(
-    { teacherId: req.auth.userId },
-    { $pull: { subjects: subject._id } }
-  );
-  await subject.deleteOne();
-  return ok(res, {}, 'Subject deleted.');
 }
 
 export async function deleteStudent(req, res) {

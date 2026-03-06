@@ -8,15 +8,33 @@ function toBoolean(value, fallback = false) {
   return ['1', 'true', 'yes', 'y', 'on'].includes(normalized);
 }
 
+function toNumber(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return parsed;
+}
+
+const nodeEnv = String(process.env.NODE_ENV || 'development').trim() || 'development';
+const jwtSecret = process.env.JWT_SECRET || 'change-me';
+const jwtLooksDefault =
+  jwtSecret === 'change-me' ||
+  jwtSecret === 'replace_with_a_long_random_secret';
+
+if (nodeEnv === 'production' && jwtLooksDefault) {
+  console.warn(
+    '[LIFT] Warning: JWT_SECRET appears to be default. Set a strong secret for production.'
+  );
+}
+
 export const env = {
-  nodeEnv: process.env.NODE_ENV || 'development',
+  nodeEnv,
   host: process.env.HOST || '127.0.0.1',
   port: Number(process.env.PORT || 5050),
   maxPortHops: Number(process.env.MAX_PORT_HOPS || 20),
   mongoUri: process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/lift_edtech',
   mongoRetryMs: Number(process.env.MONGO_RETRY_MS || 5000),
   mongoConnectTimeoutMs: Number(process.env.MONGO_CONNECT_TIMEOUT_MS || 10000),
-  jwtSecret: process.env.JWT_SECRET || 'change-me',
+  jwtSecret,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
   corsOrigins: String(
     process.env.CORS_ORIGIN || 'http://localhost:3000,http://127.0.0.1:3000'
@@ -42,5 +60,10 @@ export const env = {
   automationWebhookUrl: process.env.AUTOMATION_WEBHOOK_URL || '',
   automationWebhookSecret: process.env.AUTOMATION_WEBHOOK_SECRET || '',
   automationTimeoutMs: Number(process.env.AUTOMATION_TIMEOUT_MS || 10000),
-  automationEnabled: toBoolean(process.env.AUTOMATION_ENABLED, true)
+  automationEnabled: toBoolean(process.env.AUTOMATION_ENABLED, true),
+  rateLimitWindowMs: toNumber(process.env.RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
+  rateLimitMax: toNumber(process.env.RATE_LIMIT_MAX, 400),
+  authRateLimitMax: toNumber(process.env.AUTH_RATE_LIMIT_MAX, 25),
+  writeRateLimitMax: toNumber(process.env.WRITE_RATE_LIMIT_MAX, 180),
+  enforceInstitutionAccess: toBoolean(process.env.ENFORCE_INSTITUTION_ACCESS, true)
 };

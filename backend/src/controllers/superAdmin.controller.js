@@ -46,26 +46,27 @@ const createInstitutionSchema = z.object({
       return cleaned || 'GEN';
     }),
   planType: z.enum(['trial', 'paid']).default('trial'),
+  subscriptionLength: z.enum(['6_months', '1_year', 'lifetime']).default('1_year'),
   trialTeacherLimit: z
     .coerce
     .number()
     .int()
     .min(1, 'Teacher limit must be at least 1.')
-    .max(500, 'Teacher limit must be 500 or less.')
+    .max(10000, 'Teacher limit must be 10000 or less.')
     .default(5),
   trialSubjectLimitPerTeacher: z
     .coerce
     .number()
     .int()
     .min(1, 'Subjects-per-teacher limit must be at least 1.')
-    .max(200, 'Subjects-per-teacher limit must be 200 or less.')
+    .max(10000, 'Subjects-per-teacher limit must be 10000 or less.')
     .default(5),
   studentLimit: z
     .coerce
     .number()
     .int()
     .min(1, 'Student limit must be at least 1.')
-    .max(200000, 'Student limit is too high.')
+    .max(2000000, 'Student limit is too high.')
     .default(200),
   adminName: z
     .preprocess(
@@ -85,10 +86,11 @@ const createInstitutionSchema = z.object({
 const updateInstitutionSchema = z
   .object({
     planType: z.enum(['trial', 'paid']).optional(),
+    subscriptionLength: z.enum(['6_months', '1_year', 'lifetime']).optional(),
     paymentStatus: z.enum(['pending', 'paid', 'cancelled']).optional(),
-    trialTeacherLimit: z.coerce.number().int().min(1).max(500).optional(),
-    trialSubjectLimitPerTeacher: z.coerce.number().int().min(1).max(200).optional(),
-    studentLimit: z.coerce.number().int().min(1).max(200000).optional(),
+    trialTeacherLimit: z.coerce.number().int().min(1).max(10000).optional(),
+    trialSubjectLimitPerTeacher: z.coerce.number().int().min(1).max(10000).optional(),
+    studentLimit: z.coerce.number().int().min(1).max(2000000).optional(),
     isActive: z.boolean().optional(),
     subscriptionEndsAt: subscriptionDateSchema.optional()
   })
@@ -113,6 +115,22 @@ function generatePassword(length = 12) {
   return password;
 }
 
+function computeSubscriptionEndsAt(subscriptionLength, fromDate = new Date()) {
+  const normalized = String(subscriptionLength || '').trim().toLowerCase();
+  if (normalized === 'lifetime') return null;
+
+  const base = new Date(fromDate);
+  if (Number.isNaN(base.getTime())) return null;
+
+  if (normalized === '6_months') {
+    base.setMonth(base.getMonth() + 6);
+    return base;
+  }
+
+  base.setFullYear(base.getFullYear() + 1);
+  return base;
+}
+
 async function generateInstitutionId(cityCode) {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const institutionId = `LIFT-${cityCode}-${randomDigits(4)}`;
@@ -129,6 +147,7 @@ function serializeInstitution(institution, counts = {}) {
     institutionId: institution.institutionId,
     cityCode: institution.cityCode,
     planType: institution.planType,
+    subscriptionLength: institution.subscriptionLength || '1_year',
     paymentStatus: institution.paymentStatus,
     trialTeacherLimit: institution.trialTeacherLimit,
     trialSubjectLimitPerTeacher: institution.trialSubjectLimitPerTeacher,
@@ -202,12 +221,19 @@ export async function createInstitution(req, res) {
   const paymentStatus = payload.planType === 'paid' ? 'paid' : 'pending';
   const adminUsername = 'admin';
   const adminPassword = generatePassword();
+  const subscriptionEndsAt =
+    payload.subscriptionLength === 'lifetime'
+      ? null
+      : payload.subscriptionEndsAt
+        ? new Date(payload.subscriptionEndsAt)
+        : computeSubscriptionEndsAt(payload.subscriptionLength);
 
   const institution = await Institution.create({
     name: payload.institutionName,
     institutionId,
     cityCode: payload.cityCode,
     planType: payload.planType,
+    subscriptionLength: payload.subscriptionLength,
     paymentStatus,
     trialTeacherLimit: payload.trialTeacherLimit,
     trialSubjectLimitPerTeacher: payload.trialSubjectLimitPerTeacher,
@@ -217,7 +243,7 @@ export async function createInstitution(req, res) {
       temporaryPassword: adminPassword,
       issuedAt: new Date()
     },
-    subscriptionEndsAt: payload.subscriptionEndsAt ? new Date(payload.subscriptionEndsAt) : null,
+    subscriptionEndsAt,
     isActive: true
   });
 
@@ -227,6 +253,7 @@ export async function createInstitution(req, res) {
     role: 'admin',
     username: adminUsername,
     passwordHash,
+    temporaryPassword: adminPassword,
     fullName: payload.adminName,
     email: payload.adminEmail || '',
     phone: payload.adminPhone || '',
@@ -266,6 +293,7 @@ export async function createInstitution(req, res) {
         name: institution.name,
         institutionId: institution.institutionId,
         planType: institution.planType,
+        subscriptionLength: institution.subscriptionLength,
         paymentStatus: institution.paymentStatus
       },
       admin: {
@@ -419,7 +447,7 @@ export async function listInstitutions(req, res) {
     Institution.find({})
       .sort({ createdAt: -1 })
       .select(
-        'name institutionId cityCode planType paymentStatus trialTeacherLimit trialSubjectLimitPerTeacher studentLimit adminCredentials subscriptionEndsAt isActive createdAt'
+        'name institutionId cityCode planType subscriptionLength paymentStatus trialTeacherLimit trialSubjectLimitPerTeacher studentLimit adminCredentials subscriptionEndsAt isActive createdAt'
       )
       .lean(),
     buildCountsMap()
@@ -480,6 +508,14 @@ export async function updateInstitution(req, res) {
   if (!institution) return notFound(res, 'Institution not found.');
 
   if (payload.planType !== undefined) institution.planType = payload.planType;
+  if (payload.subscriptionLength !== undefined) {
+    institution.subscriptionLength = payload.subscriptionLength;
+    if (payload.subscriptionLength === 'lifetime' && payload.subscriptionEndsAt === undefined) {
+      institution.subscriptionEndsAt = null;
+    } else if (payload.subscriptionEndsAt === undefined) {
+      institution.subscriptionEndsAt = computeSubscriptionEndsAt(payload.subscriptionLength);
+    }
+  }
   if (payload.paymentStatus !== undefined) institution.paymentStatus = payload.paymentStatus;
   if (payload.trialTeacherLimit !== undefined) institution.trialTeacherLimit = payload.trialTeacherLimit;
   if (payload.trialSubjectLimitPerTeacher !== undefined) {
@@ -580,6 +616,7 @@ export async function resetInstitutionAdminPassword(req, res) {
 
   const nextPassword = generatePassword();
   admin.passwordHash = await User.hashPassword(nextPassword);
+  admin.temporaryPassword = nextPassword;
   admin.mustChangePassword = false;
   await admin.save();
 

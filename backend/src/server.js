@@ -1,8 +1,10 @@
 import { buildApp } from './app.js';
-import { connectDb } from './config/db.js';
+import { connectDb, disconnectDb } from './config/db.js';
 import { env } from './config/env.js';
 
 const app = buildApp();
+let activeServer = null;
+let shuttingDown = false;
 
 async function connectDbWithRetry(attempt = 1) {
   try {
@@ -40,7 +42,8 @@ function listenWithPortFallback(startPort, hopsRemaining) {
 
 async function start() {
   try {
-    const { port } = await listenWithPortFallback(env.port, env.maxPortHops);
+    const { port, server } = await listenWithPortFallback(env.port, env.maxPortHops);
+    activeServer = server;
     console.log(`Backend running on http://${env.host}:${port}`);
     void connectDbWithRetry();
   } catch (error) {
@@ -48,5 +51,29 @@ async function start() {
     process.exit(1);
   }
 }
+
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal} received. Shutting down backend...`);
+
+  try {
+    if (activeServer) {
+      await new Promise((resolve) => activeServer.close(resolve));
+    }
+    await disconnectDb();
+  } catch (error) {
+    console.error(`Error during shutdown: ${error.message}`);
+  } finally {
+    process.exit(0);
+  }
+}
+
+process.on('SIGINT', () => {
+  void shutdown('SIGINT');
+});
+process.on('SIGTERM', () => {
+  void shutdown('SIGTERM');
+});
 
 start();

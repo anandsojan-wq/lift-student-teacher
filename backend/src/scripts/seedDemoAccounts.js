@@ -85,6 +85,7 @@ async function ensureUser({ institutionId, role, username, password, fullName })
 
   if (existing) {
     existing.passwordHash = passwordHash;
+    existing.temporaryPassword = password;
     existing.fullName = fullName;
     existing.role = role;
     existing.mustChangePassword = false;
@@ -98,6 +99,7 @@ async function ensureUser({ institutionId, role, username, password, fullName })
     role,
     username: username.toLowerCase(),
     passwordHash,
+    temporaryPassword: password,
     fullName,
     email: '',
     phone: '',

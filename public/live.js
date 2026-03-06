@@ -5,8 +5,11 @@ const SESSION_REMEMBER_KEY = 'lift_live_session_remember_v1';
 const LOGIN_HINTS_KEY = 'lift_live_login_hints_v1';
 const STUDENT_TODO_KEY = 'lift_student_todos_v1';
 const API_CANDIDATE_PORTS = Array.from({ length: 21 }, (_, index) => 5050 + index);
-const MCQ_QUESTION_LIMIT = 20;
-const MCQ_DURATION_MINUTES = 5;
+const MCQ_DEFAULT_QUESTION_COUNT = 20;
+const MCQ_MIN_QUESTION_COUNT = 1;
+const MCQ_MAX_QUESTION_COUNT = 100;
+const MCQ_DEFAULT_DURATION_MINUTES = 5;
+const NAV_TRANSITION_MS = 220;
 
 if (typeof window !== 'undefined' && window.pdfjsLib?.GlobalWorkerOptions) {
   window.pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -16,7 +19,12 @@ if (typeof window !== 'undefined' && window.pdfjsLib?.GlobalWorkerOptions) {
 const runtime = {
   attemptTimerId: null,
   attemptSubmitting: false,
-  debounceHandles: {}
+  debounceHandles: {},
+  apiCache: new Map(),
+  apiInFlight: new Map(),
+  navTransitionTimerId: null,
+  prefetchAt: new Map(),
+  navOutsideClickBound: false
 };
 
 function todayIsoDate() {
@@ -47,8 +55,19 @@ const state = {
   teacherResourceSubjectId: '',
   teacherTestSubjectId: '',
   teacherTestType: 'mcq',
+  teacherMcqQuestionCount: '',
+  teacherMcqDurationMinutes: MCQ_DEFAULT_DURATION_MINUTES,
+  teacherMcqCorrectMark: 1,
+  teacherMcqWrongMark: 0,
+  teacherPdfDurationMinutes: 60,
   teacherTestAudienceMode: 'all',
   teacherTestSelectedStudentIds: [],
+  teacherTestScheduleEnabled: false,
+  teacherTestScheduleDate: todayIsoDate(),
+  teacherTestScheduleStartTime: '17:00',
+  teacherTestScheduleEndTime: '19:00',
+  teacherViewedTestId: '',
+  teacherReconductDraft: null,
   teacherAssessmentSubjectId: '',
   teacherAssessmentType: '',
   teacherAssessmentStatus: 'pending',
@@ -56,7 +75,14 @@ const state = {
   studentResourceSearch: '',
   studentResourceType: '',
   studentResourceSubjectId: '',
-  studentSyllabusSubjectId: ''
+  studentSyllabusSubjectId: '',
+  studentPdfViewer: null,
+  qaReports: {
+    admin: null,
+    teacher: null,
+    student: null
+  },
+  qaRunningRole: ''
 };
 
 function loadSession() {
@@ -65,7 +91,7 @@ function loadSession() {
       const raw = storage.getItem(SESSION_KEY);
       if (!raw) return null;
       const parsed = JSON.parse(raw);
-      if (!parsed || !parsed.token || !parsed.user || !parsed.institutionId) return null;
+      if (!parsed || !parsed.user || !parsed.institutionId) return null;
       return parsed;
     } catch (error) {
       return null;
@@ -154,6 +180,7 @@ function saveStudentTodos(userId, todos) {
 }
 
 function saveSession(session, remember = state.authRememberMe) {
+  clearApiCache();
   state.session = session;
   if (!session) {
     localStorage.removeItem(SESSION_KEY);
@@ -161,7 +188,12 @@ function saveSession(session, remember = state.authRememberMe) {
     return;
   }
 
-  const serialized = JSON.stringify(session);
+  const safeSession = {
+    token: '',
+    user: session.user,
+    institutionId: session.institutionId
+  };
+  const serialized = JSON.stringify(safeSession);
   const shouldRemember = Boolean(remember);
   localStorage.setItem(SESSION_REMEMBER_KEY, shouldRemember ? '1' : '0');
   state.authRememberMe = shouldRemember;
@@ -195,8 +227,19 @@ function resetUiStateOnLogout() {
   state.teacherResourceSubjectId = '';
   state.teacherTestSubjectId = '';
   state.teacherTestType = 'mcq';
+  state.teacherMcqQuestionCount = '';
+  state.teacherMcqDurationMinutes = MCQ_DEFAULT_DURATION_MINUTES;
+  state.teacherMcqCorrectMark = 1;
+  state.teacherMcqWrongMark = 0;
+  state.teacherPdfDurationMinutes = 60;
   state.teacherTestAudienceMode = 'all';
   state.teacherTestSelectedStudentIds = [];
+  state.teacherTestScheduleEnabled = false;
+  state.teacherTestScheduleDate = todayIsoDate();
+  state.teacherTestScheduleStartTime = '17:00';
+  state.teacherTestScheduleEndTime = '19:00';
+  state.teacherViewedTestId = '';
+  state.teacherReconductDraft = null;
   state.teacherAssessmentSubjectId = '';
   state.teacherAssessmentType = '';
   state.teacherAssessmentStatus = 'pending';
@@ -205,6 +248,13 @@ function resetUiStateOnLogout() {
   state.studentResourceType = '';
   state.studentResourceSubjectId = '';
   state.studentSyllabusSubjectId = '';
+  state.studentPdfViewer = null;
+  state.qaReports = {
+    admin: null,
+    teacher: null,
+    student: null
+  };
+  state.qaRunningRole = '';
 }
 
 function clearAttemptTimer() {
@@ -213,6 +263,118 @@ function clearAttemptTimer() {
     runtime.attemptTimerId = null;
   }
   runtime.attemptSubmitting = false;
+}
+
+function clearApiCache() {
+  runtime.apiCache.clear();
+  runtime.apiInFlight.clear();
+}
+
+function cacheTtlForPath(path) {
+  const key = String(path || '');
+  if (key.includes('/health')) return 0;
+  if (key.includes('/analytics')) return 8_000;
+  if (key.includes('/summary')) return 7_000;
+  if (key.includes('/subjects')) return 12_000;
+  if (key.includes('/teachers')) return 8_000;
+  if (key.includes('/students')) return 5_000;
+  if (key.includes('/resources')) return 6_000;
+  if (key.includes('/tests')) return 4_000;
+  if (key.includes('/class-plans')) return 6_000;
+  if (key.includes('/assessments')) return 4_000;
+  if (key.includes('/auth/me')) return 10_000;
+  return 5_000;
+}
+
+function beginNavTransition() {
+  if (!app) return;
+  app.classList.add('view-switching');
+  if (runtime.navTransitionTimerId) clearTimeout(runtime.navTransitionTimerId);
+  runtime.navTransitionTimerId = setTimeout(() => {
+    app.classList.remove('view-switching');
+  }, NAV_TRANSITION_MS);
+}
+
+function endNavTransition() {
+  if (!app) return;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      app.classList.remove('view-switching');
+    });
+  });
+}
+
+function closeOpenNavDropdowns(except = null) {
+  document.querySelectorAll('.nav-dropdown[open]').forEach((item) => {
+    if (except && item === except) return;
+    item.removeAttribute('open');
+  });
+}
+
+function bindNavDropdowns() {
+  const dropdowns = Array.from(document.querySelectorAll('.nav-dropdown'));
+  if (!dropdowns.length) return;
+
+  dropdowns.forEach((dropdown) => {
+    const summary = dropdown.querySelector(':scope > summary');
+    if (!summary) return;
+
+    summary.addEventListener('click', (event) => {
+      event.preventDefault();
+      const wasOpen = dropdown.hasAttribute('open');
+      closeOpenNavDropdowns(dropdown);
+      if (wasOpen) {
+        dropdown.removeAttribute('open');
+      } else {
+        dropdown.setAttribute('open', '');
+      }
+    });
+  });
+
+  if (!runtime.navOutsideClickBound) {
+    document.addEventListener('click', (event) => {
+      if (!(event.target instanceof Element)) return;
+      if (event.target.closest('.nav-dropdown')) return;
+      closeOpenNavDropdowns();
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        closeOpenNavDropdowns();
+      }
+    });
+
+    runtime.navOutsideClickBound = true;
+  }
+}
+
+function schedulePrefetch(paths = [], key = 'default', cooldownMs = 12_000) {
+  if (!state.session?.user?.id) return;
+  const now = Date.now();
+  const previous = runtime.prefetchAt.get(key) || 0;
+  if (now - previous < cooldownMs) return;
+  runtime.prefetchAt.set(key, now);
+
+  const cleanPaths = Array.from(
+    new Set(
+      paths
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+    )
+  );
+  if (!cleanPaths.length) return;
+
+  const run = () => {
+    cleanPaths.forEach((path) => {
+      void api(path, { cacheTtlMs: 10_000 }).catch(() => {});
+    });
+  };
+
+  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(run, { timeout: 1200 });
+    return;
+  }
+  setTimeout(run, 120);
 }
 
 function debounceByKey(key, callback, delayMs = 180) {
@@ -331,7 +493,7 @@ async function copyTextToClipboard(text) {
 }
 
 function escapeHtml(value) {
-  return String(value || '')
+  return String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -357,6 +519,11 @@ function cleanPhone(phone) {
   return digits.length === 10 ? `91${digits}` : digits;
 }
 
+function generateTempPassword() {
+  const random = Math.random().toString(36).slice(2, 8);
+  return `Lift@${random}`;
+}
+
 function formatDate(value) {
   if (!value) return '-';
   try {
@@ -366,12 +533,35 @@ function formatDate(value) {
   }
 }
 
+function formatTime(value) {
+  if (!value) return '-';
+  try {
+    return new Date(value).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  } catch (error) {
+    return String(value);
+  }
+}
+
+function formatTestWindow(test) {
+  const start = test?.scheduledStartAt;
+  const end = test?.scheduledEndAt;
+  if (!start || !end) return 'Always available';
+  return `${formatDate(start)} to ${formatTime(end)}`;
+}
+
+function combineDateAndTimeToIso(dateValue, timeValue) {
+  const cleanDate = String(dateValue || '').trim();
+  const cleanTime = String(timeValue || '').trim();
+  if (!cleanDate || !cleanTime) return '';
+  const localDate = new Date(`${cleanDate}T${cleanTime}:00`);
+  if (Number.isNaN(localDate.getTime())) return '';
+  return localDate.toISOString();
+}
+
 function formatTestType(type) {
   const normalized = String(type || '').trim().toLowerCase();
   if (normalized === 'mcq') return 'MCQ';
-  if (normalized === 'true_false') return 'TRUE / FALSE';
-  if (normalized === 'long') return 'LONG ANSWER';
-  if (normalized === 'short') return 'SHORT ANSWER';
+  if (normalized === 'long') return 'UPLOAD QUESTIONS AS PDF';
   return normalized ? normalized.replace(/_/g, ' ').toUpperCase() : '-';
 }
 
@@ -387,32 +577,241 @@ function toQueryString(params) {
   return text ? `?${text}` : '';
 }
 
-function navButtonsMarkup(items, activeValue, attrName) {
-  return items
-    .map(
-      (item) =>
-        `<button class="nav-tab ${activeValue === item.value ? 'active' : ''}" ${attrName}="${item.value}">${escapeHtml(item.label)}</button>`
-    )
-    .join('');
+function resolveEntityId(entity) {
+  if (!entity || typeof entity !== 'object') return '';
+  const candidate = entity._id ?? entity.id ?? entity.userId ?? entity.subjectId;
+  return candidate == null ? '' : String(candidate);
 }
 
-function objectiveQuestionBuilderMarkup(type) {
-  const isTrueFalse = type === 'true_false';
-  const cards = Array.from({ length: MCQ_QUESTION_LIMIT }, (_, index) => {
-    const serial = index + 1;
-    if (isTrueFalse) {
-      return `
-        <article class="question-builder-card">
-          <h4>Question ${serial}</h4>
-          <input id="objective-q-${index}" type="text" placeholder="Enter question ${serial}" />
-          <select id="objective-q-${index}-answer">
-            <option value="0">Correct Answer: True</option>
-            <option value="1">Correct Answer: False</option>
-          </select>
-        </article>
-      `;
-    }
+function resolveSubjectId(subject) {
+  if (!subject) return '';
+  if (typeof subject === 'string' || typeof subject === 'number') return String(subject);
+  return resolveEntityId(subject);
+}
 
+function checkedDataValues(selector, attribute) {
+  return Array.from(document.querySelectorAll(selector))
+    .map((item) => item.getAttribute(attribute))
+    .filter(Boolean);
+}
+
+const ROLE_SMOKE_CHECKS = {
+  admin: [
+    { label: 'Profile', path: '/auth/me' },
+    { label: 'Summary', path: '/admin/summary' },
+    { label: 'Courses', path: '/admin/subjects' },
+    { label: 'Teachers', path: '/admin/teachers' },
+    { label: 'Students', path: '/admin/students?limit=1' }
+  ],
+  teacher: [
+    { label: 'Profile', path: '/auth/me' },
+    { label: 'Subjects', path: '/teacher/subjects' },
+    { label: 'Students', path: '/teacher/students?limit=1' },
+    { label: 'Resources', path: '/teacher/resources?limit=1' },
+    { label: 'Tests', path: '/teacher/tests?limit=1' }
+  ],
+  student: [
+    { label: 'Profile', path: '/auth/me' },
+    { label: 'Dashboard', path: '/student/dashboard' },
+    { label: "Today's Queue", path: '/student/tests/queue' },
+    { label: 'Resources', path: '/student/resources?limit=1' },
+    { label: 'Syllabus', path: '/student/syllabus' }
+  ]
+};
+
+async function runRoleSmokeChecks(role) {
+  const checks = ROLE_SMOKE_CHECKS[role] || [];
+  const startedAt = Date.now();
+
+  const results = await Promise.all(
+    checks.map(async (check) => {
+      const checkStart = Date.now();
+      try {
+        await api(check.path, { cacheTtlMs: 0, noCache: true });
+        return {
+          ...check,
+          ok: true,
+          durationMs: Date.now() - checkStart,
+          message: 'OK'
+        };
+      } catch (error) {
+        return {
+          ...check,
+          ok: false,
+          durationMs: Date.now() - checkStart,
+          message: error.message || 'Failed'
+        };
+      }
+    })
+  );
+
+  const passedCount = results.filter((item) => item.ok).length;
+  return {
+    role,
+    startedAt: new Date(startedAt).toISOString(),
+    durationMs: Date.now() - startedAt,
+    passedCount,
+    failedCount: results.length - passedCount,
+    results
+  };
+}
+
+function smokeReportMarkup(report) {
+  if (!report) return '';
+
+  return `
+    <section class="panel smoke-panel">
+      <div class="progress-row">
+        <h3>Quick QA Check</h3>
+        <span class="alert-tag ${
+          report.failedCount ? 'alert-tag-warn' : 'alert-tag-ok'
+        }">${escapeHtml(report.failedCount ? 'Needs Attention' : 'All Good')}</span>
+      </div>
+      <p class="muted">
+        ${escapeHtml(report.passedCount)} passed, ${escapeHtml(report.failedCount)} failed in ${escapeHtml(
+          report.durationMs
+        )} ms
+      </p>
+      <div class="smoke-list">
+        ${report.results
+          .map(
+            (item) => `
+              <article class="smoke-item ${item.ok ? 'ok' : 'fail'}">
+                <strong>${escapeHtml(item.label)}</strong>
+                <span>${escapeHtml(item.durationMs)} ms</span>
+                <p class="muted">${escapeHtml(item.message)}</p>
+              </article>
+            `
+          )
+          .join('')}
+      </div>
+    </section>
+  `;
+}
+
+function adminNavMarkup(activeTab) {
+  const isTeacherTab = String(activeTab || '').startsWith('teachers_');
+  const isStudentTab = String(activeTab || '').startsWith('students_');
+  const isCourseTab = String(activeTab || '').startsWith('courses_');
+
+  return `
+    <button class="nav-tab ${activeTab === 'dashboard' ? 'active' : ''}" data-admin-tab="dashboard">Dashboard</button>
+    <button class="nav-tab ${activeTab === 'analytics' ? 'active' : ''}" data-admin-tab="analytics">Analytics</button>
+
+    <details class="nav-dropdown ${isTeacherTab ? 'active' : ''}">
+      <summary class="nav-tab ${isTeacherTab ? 'active' : ''}">Teachers</summary>
+      <div class="nav-dropdown-menu">
+        <button type="button" class="nav-dropdown-item ${activeTab === 'teachers_create' ? 'active' : ''}" data-admin-tab="teachers_create">Create New Teacher</button>
+        <button type="button" class="nav-dropdown-item ${activeTab === 'teachers_edit' ? 'active' : ''}" data-admin-tab="teachers_edit">Edit Existing Teacher</button>
+        <button type="button" class="nav-dropdown-item ${activeTab === 'teachers_reset' ? 'active' : ''}" data-admin-tab="teachers_reset">Create New Password</button>
+        <button type="button" class="nav-dropdown-item ${activeTab === 'teachers_delete' ? 'active' : ''}" data-admin-tab="teachers_delete">Delete Teacher</button>
+      </div>
+    </details>
+
+    <details class="nav-dropdown ${isStudentTab ? 'active' : ''}">
+      <summary class="nav-tab ${isStudentTab ? 'active' : ''}">Students</summary>
+      <div class="nav-dropdown-menu">
+        <button type="button" class="nav-dropdown-item ${activeTab === 'students_view' ? 'active' : ''}" data-admin-tab="students_view">View Students</button>
+      </div>
+    </details>
+
+    <details class="nav-dropdown ${isCourseTab ? 'active' : ''}">
+      <summary class="nav-tab ${isCourseTab ? 'active' : ''}">Courses</summary>
+      <div class="nav-dropdown-menu">
+        <button type="button" class="nav-dropdown-item ${activeTab === 'courses_create' ? 'active' : ''}" data-admin-tab="courses_create">Create New Course</button>
+        <button type="button" class="nav-dropdown-item ${activeTab === 'courses_edit' ? 'active' : ''}" data-admin-tab="courses_edit">Edit Course</button>
+        <button type="button" class="nav-dropdown-item ${activeTab === 'courses_delete' ? 'active' : ''}" data-admin-tab="courses_delete">Delete Course</button>
+      </div>
+    </details>
+
+    <button class="nav-tab ${activeTab === 'accounts' ? 'active' : ''}" data-admin-tab="accounts">Accounts</button>
+  `;
+}
+
+function teacherNavMarkup(activeTab) {
+  const isManagementTab = activeTab === 'subjects' || activeTab === 'students';
+  const isAssessmentTab =
+    activeTab === 'assessment_conduct' ||
+    activeTab === 'assessment_results';
+
+  return `
+    <button class="nav-tab ${activeTab === 'dashboard' ? 'active' : ''}" data-teacher-tab="dashboard">Dashboard</button>
+
+    <details class="nav-dropdown ${isManagementTab ? 'active' : ''}">
+      <summary class="nav-tab ${isManagementTab ? 'active' : ''}">Management</summary>
+      <div class="nav-dropdown-menu">
+        <button type="button" class="nav-dropdown-item ${activeTab === 'subjects' ? 'active' : ''}" data-teacher-tab="subjects">Subjects</button>
+        <button type="button" class="nav-dropdown-item ${activeTab === 'students' ? 'active' : ''}" data-teacher-tab="students">Students</button>
+      </div>
+    </details>
+
+    <button class="nav-tab ${activeTab === 'class_planner' ? 'active' : ''}" data-teacher-tab="class_planner">Class Planner</button>
+    <button class="nav-tab ${activeTab === 'resources' ? 'active' : ''}" data-teacher-tab="resources">Upload Resources</button>
+
+    <details class="nav-dropdown ${isAssessmentTab ? 'active' : ''}">
+      <summary class="nav-tab ${isAssessmentTab ? 'active' : ''}">Assessment</summary>
+      <div class="nav-dropdown-menu">
+        <button type="button" class="nav-dropdown-item ${activeTab === 'assessment_conduct' ? 'active' : ''}" data-teacher-tab="assessment_conduct">Conduct Test</button>
+        <button type="button" class="nav-dropdown-item ${activeTab === 'assessment_results' ? 'active' : ''}" data-teacher-tab="assessment_results">Evaluate Results</button>
+      </div>
+    </details>
+
+    <button class="nav-tab ${activeTab === 'accounts' ? 'active' : ''}" data-teacher-tab="accounts">Accounts</button>
+  `;
+}
+
+function studentNavMarkup(activeTab) {
+  const isTestsTab =
+    activeTab === 'today' ||
+    activeTab === 'pending' ||
+    activeTab === 'history';
+  const isLearningTab =
+    activeTab === 'classes' ||
+    activeTab === 'resources' ||
+    activeTab === 'syllabus' ||
+    activeTab === 'planner';
+
+  return `
+    <button class="nav-tab ${activeTab === 'dashboard' ? 'active' : ''}" data-student-tab="dashboard">Dashboard</button>
+
+    <details class="nav-dropdown ${isTestsTab ? 'active' : ''}">
+      <summary class="nav-tab ${isTestsTab ? 'active' : ''}">Tests</summary>
+      <div class="nav-dropdown-menu">
+        <button type="button" class="nav-dropdown-item ${activeTab === 'today' ? 'active' : ''}" data-student-tab="today">Today's Test</button>
+        <button type="button" class="nav-dropdown-item ${activeTab === 'pending' ? 'active' : ''}" data-student-tab="pending">Pending Tests</button>
+        <button type="button" class="nav-dropdown-item ${activeTab === 'history' ? 'active' : ''}" data-student-tab="history">Test History</button>
+      </div>
+    </details>
+
+    <details class="nav-dropdown ${isLearningTab ? 'active' : ''}">
+      <summary class="nav-tab ${isLearningTab ? 'active' : ''}">Learning</summary>
+      <div class="nav-dropdown-menu">
+        <button type="button" class="nav-dropdown-item ${activeTab === 'classes' ? 'active' : ''}" data-student-tab="classes">Today's Classes</button>
+        <button type="button" class="nav-dropdown-item ${activeTab === 'resources' ? 'active' : ''}" data-student-tab="resources">Resources</button>
+        <button type="button" class="nav-dropdown-item ${activeTab === 'syllabus' ? 'active' : ''}" data-student-tab="syllabus">Syllabus</button>
+        <button type="button" class="nav-dropdown-item ${activeTab === 'planner' ? 'active' : ''}" data-student-tab="planner">Study To-Do</button>
+      </div>
+    </details>
+
+    <button class="nav-tab ${activeTab === 'accounts' ? 'active' : ''}" data-student-tab="accounts">Accounts</button>
+  `;
+}
+
+function getValidMcqQuestionCount(value) {
+  const parsed = Number(String(value ?? '').trim());
+  if (!Number.isFinite(parsed)) return null;
+  const normalized = Math.floor(parsed);
+  if (normalized < MCQ_MIN_QUESTION_COUNT || normalized > MCQ_MAX_QUESTION_COUNT) return null;
+  return normalized;
+}
+
+function objectiveQuestionBuilderMarkup(questionCount) {
+  const safeCount = Math.max(
+    MCQ_MIN_QUESTION_COUNT,
+    Math.min(MCQ_MAX_QUESTION_COUNT, Number(questionCount || MCQ_DEFAULT_QUESTION_COUNT))
+  );
+  const cards = Array.from({ length: safeCount }, (_, index) => {
+    const serial = index + 1;
     return `
       <article class="question-builder-card">
         <h4>Question ${serial}</h4>
@@ -435,35 +834,24 @@ function objectiveQuestionBuilderMarkup(type) {
 
   return `
     <section class="builder-box">
-      <p class="muted">Use the boxes below to create all ${MCQ_QUESTION_LIMIT} questions.</p>
+      <p class="muted">Use the boxes below to create all ${safeCount} questions.</p>
       <div class="objective-builder-grid">${cards}</div>
     </section>
   `;
 }
 
-function collectObjectiveQuestions(type) {
+function collectObjectiveQuestions(questionCount) {
+  const safeCount = Math.max(
+    MCQ_MIN_QUESTION_COUNT,
+    Math.min(MCQ_MAX_QUESTION_COUNT, Number(questionCount || MCQ_DEFAULT_QUESTION_COUNT))
+  );
   const questions = [];
-  for (let index = 0; index < MCQ_QUESTION_LIMIT; index += 1) {
+  for (let index = 0; index < safeCount; index += 1) {
     const questionText = sanitizeValue(
       document.getElementById(`objective-q-${index}`)?.value || ''
     );
     if (!questionText) {
       throw new Error(`Question ${index + 1} text is required.`);
-    }
-
-    if (type === 'true_false') {
-      const correctIndex = Number(
-        document.getElementById(`objective-q-${index}-answer`)?.value
-      );
-      if (correctIndex !== 0 && correctIndex !== 1) {
-        throw new Error(`Question ${index + 1} must have a correct answer.`);
-      }
-      questions.push({
-        text: questionText,
-        options: ['True', 'False'],
-        correctIndex
-      });
-      continue;
     }
 
     const options = [0, 1, 2, 3].map((optionIndex) =>
@@ -486,6 +874,58 @@ function collectObjectiveQuestions(type) {
       correctIndex
     });
   }
+  return questions;
+}
+
+function buildReconductDraftFromTest(test) {
+  return {
+    sourceTestId: String(test?._id || ''),
+    subjectId: String(test?.subjectId || ''),
+    title: String(test?.title || ''),
+    durationMinutes: Number(test?.durationMinutes || MCQ_DEFAULT_DURATION_MINUTES),
+    mcqCorrectMark: Number(test?.mcqCorrectMark ?? 1),
+    mcqWrongMark: Number(test?.mcqWrongMark ?? 0),
+    audienceMode: 'selected',
+    selectedStudentIds: [],
+    questions: (test?.questions || []).map((question) => ({
+      text: String(question?.text || ''),
+      options: Array.isArray(question?.options)
+        ? question.options.map((option) => String(option || ''))
+        : ['', '', '', ''],
+      correctIndex: Number(question?.correctIndex ?? 0)
+    }))
+  };
+}
+
+function collectReconductQuestionsFromDom(questionCount) {
+  const count = Math.max(1, Number(questionCount || 0));
+  const questions = [];
+
+  for (let index = 0; index < count; index += 1) {
+    const text = sanitizeValue(document.getElementById(`reconduct-q-${index}`)?.value || '');
+    if (!text) throw new Error(`Question ${index + 1} text is required.`);
+
+    const options = [0, 1, 2, 3].map((opt) =>
+      sanitizeValue(document.getElementById(`reconduct-q-${index}-opt-${opt}`)?.value || '')
+    );
+    if (options.some((option) => !option)) {
+      throw new Error(`Question ${index + 1} must include all four options.`);
+    }
+
+    const correctIndex = Number(
+      document.getElementById(`reconduct-q-${index}-answer`)?.value
+    );
+    if (!Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex > 3) {
+      throw new Error(`Question ${index + 1} must have a valid correct option.`);
+    }
+
+    questions.push({
+      text,
+      options,
+      correctIndex
+    });
+  }
+
   return questions;
 }
 
@@ -515,12 +955,6 @@ function funnelCardMarkup(title, metrics) {
       </div>
     </article>
   `;
-}
-
-function bindTabButtons(selector, callback) {
-  document.querySelectorAll(selector).forEach((button) => {
-    button.addEventListener('click', () => callback(button));
-  });
 }
 
 function downloadCsv(filename, columns, rows) {
@@ -562,24 +996,179 @@ function downloadTextFile(filename, content) {
   URL.revokeObjectURL(url);
 }
 
-function parseLongQuestions(raw) {
-  const lines = String(raw || '')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
+function getJsPdfClass() {
+  return window.jspdf?.jsPDF || null;
+}
 
-  if (!lines.length) {
-    throw new Error('Add at least one long question.');
+function saveTextAsPdf(filename, lines = []) {
+  const JsPdf = getJsPdfClass();
+  if (!JsPdf) throw new Error('PDF export is not available right now. Refresh and try again.');
+
+  const doc = new JsPdf({ unit: 'pt', format: 'a4' });
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const marginX = 48;
+  const marginY = 48;
+  const maxWidth = doc.internal.pageSize.getWidth() - marginX * 2;
+  const lineHeight = 16;
+  let cursorY = marginY;
+
+  const pushLine = (text = '') => {
+    const segments = doc.splitTextToSize(String(text), maxWidth);
+    segments.forEach((segment) => {
+      if (cursorY > pageHeight - marginY) {
+        doc.addPage();
+        cursorY = marginY;
+      }
+      doc.text(segment, marginX, cursorY);
+      cursorY += lineHeight;
+    });
+  };
+
+  (lines || []).forEach((line) => pushLine(line));
+  doc.save(filename);
+}
+
+function buildMcqQuestionsPdfLines(test) {
+  const lines = [];
+  lines.push(`Test: ${test.title || 'MCQ Test'}`);
+  lines.push(`Type: MCQ`);
+  lines.push(`Duration: ${test.durationMinutes || '-'} minutes`);
+  lines.push(`Questions: ${(test.questions || []).length}`);
+  lines.push('');
+
+  (test.questions || []).forEach((question, index) => {
+    lines.push(`${index + 1}. ${question.text || ''}`);
+    const options = Array.isArray(question.options) ? question.options : [];
+    options.forEach((option, optionIndex) => {
+      lines.push(`   ${String.fromCharCode(65 + optionIndex)}. ${option}`);
+    });
+    lines.push('');
+  });
+
+  return lines;
+}
+
+function buildMcqAnswerKeyPdfLines(test) {
+  const lines = [];
+  lines.push(`Answer Key: ${test.title || 'MCQ Test'}`);
+  lines.push('');
+
+  (test.questions || []).forEach((question, index) => {
+    const options = Array.isArray(question.options) ? question.options : [];
+    const correctIndex = Number(question.correctIndex);
+    const correctLetter =
+      Number.isInteger(correctIndex) && correctIndex >= 0 && correctIndex < options.length
+        ? String.fromCharCode(65 + correctIndex)
+        : '-';
+    const correctText =
+      Number.isInteger(correctIndex) && correctIndex >= 0 && correctIndex < options.length
+        ? options[correctIndex]
+        : '';
+    lines.push(`${index + 1}. ${correctLetter}${correctText ? ` - ${correctText}` : ''}`);
+  });
+
+  return lines;
+}
+
+function buildMcqCombinedPdfLines(test) {
+  return [
+    ...buildMcqQuestionsPdfLines(test),
+    '',
+    '----------------------------------------',
+    'ANSWER KEY',
+    '----------------------------------------',
+    '',
+    ...buildMcqAnswerKeyPdfLines(test)
+  ];
+}
+
+async function extractQuestionsFromPdf(file) {
+  if (!file) throw new Error('Please upload a PDF file.');
+  if (!window.pdfjsLib) throw new Error('PDF reader is not ready. Refresh and try again.');
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const lines = [];
+
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    const page = await pdf.getPage(pageNumber);
+    const textContent = await page.getTextContent();
+    const buckets = new Map();
+
+    (textContent.items || []).forEach((item) => {
+      const text = String(item.str || '').trim();
+      if (!text) return;
+      const y = Math.round(Number(item.transform?.[5] || 0));
+      const key = Number.isFinite(y) ? y : 0;
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(text);
+    });
+
+    const ordered = [...buckets.entries()]
+      .sort((a, b) => b[0] - a[0])
+      .map(([, row]) => row.join(' ').replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+
+    lines.push(...ordered);
   }
 
-  return lines.map((line) => ({ text: line }));
+  const filteredLines = lines
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter((line) => line.length >= 3);
+
+  if (!filteredLines.length) {
+    throw new Error('No readable question text found in this PDF.');
+  }
+
+  const markerRegex = /^((q(uestion)?\s*)?\d+[\.\):\-]|q[\.\):\-]?\d+)\s*/i;
+  const optionRegex = /^([a-d][\)\.\-:]|option\s*[a-d])/i;
+  const questionBlocks = [];
+  let current = '';
+
+  filteredLines.forEach((line) => {
+    const isQuestionStart = markerRegex.test(line);
+    const isOptionLine = optionRegex.test(line);
+
+    if (isQuestionStart && !isOptionLine) {
+      if (current) questionBlocks.push(current.trim());
+      current = line.replace(markerRegex, '').trim() || line.trim();
+      return;
+    }
+
+    if (isOptionLine) return;
+    current = current ? `${current} ${line}` : line;
+  });
+
+  if (current) questionBlocks.push(current.trim());
+
+  let normalized = questionBlocks
+    .map((text) => text.replace(/\s+/g, ' ').trim())
+    .filter((text) => text.length >= 1);
+
+  if (!normalized.length) {
+    normalized = filteredLines
+      .join('\n')
+      .split(/\?/)
+      .map((chunk) => chunk.replace(/\s+/g, ' ').trim())
+      .filter((chunk) => chunk.length >= 3)
+      .map((chunk) => `${chunk}?`);
+  }
+
+  normalized = normalized.slice(0, 40);
+  if (!normalized.length) {
+    throw new Error('Could not detect questions from this PDF.');
+  }
+
+  return normalized.map((text, index) => ({
+    text: text.length > 320 ? `${text.slice(0, 317)}...` : text || `Question ${index + 1}`
+  }));
 }
 
 function assessmentAnswersMarkup(attempt) {
   const answers = Array.isArray(attempt?.answers) ? attempt.answers : [];
   if (!answers.length) return '<span class="muted">-</span>';
 
-  if (attempt.type !== 'short' && attempt.type !== 'long') {
+  if (attempt.type !== 'long') {
     return '<span class="muted">Auto-graded</span>';
   }
 
@@ -606,16 +1195,21 @@ function assessmentAnswersMarkup(attempt) {
 async function resolveApiBase() {
   if (state.apiResolved) return state.apiBase;
 
-  try {
-    const sameOriginBase = `${window.location.origin}/api`;
-    const response = await fetch(`${sameOriginBase}/health`, { method: 'GET' });
-    if (response.ok || response.status === 401 || response.status === 403) {
-      state.apiBase = sameOriginBase;
-      state.apiResolved = true;
-      return state.apiBase;
+  const hostname = String(window.location.hostname || '').toLowerCase();
+  const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1';
+
+  if (!isLocalHost) {
+    try {
+      const sameOriginBase = `${window.location.origin}/api`;
+      const response = await fetch(`${sameOriginBase}/health`, { method: 'GET' });
+      if (response.ok || response.status === 401 || response.status === 403) {
+        state.apiBase = sameOriginBase;
+        state.apiResolved = true;
+        return state.apiBase;
+      }
+    } catch (error) {
+      // fallback below
     }
-  } catch (error) {
-    // fallback below
   }
 
   for (const port of API_CANDIDATE_PORTS) {
@@ -638,6 +1232,25 @@ async function resolveApiBase() {
 
 async function api(path, options = {}) {
   const base = await resolveApiBase();
+  const method = String(options.method || 'GET').toUpperCase();
+  const isCacheableGet =
+    method === 'GET' && !options.body && !options.noCache && !options.headers?.['Cache-Control'];
+  const tokenKey = state.session?.user?.id || state.session?.institutionId || 'anon';
+  const cacheKey = `${tokenKey}:${path}`;
+  const ttlMs = Math.max(0, Number(options.cacheTtlMs ?? cacheTtlForPath(path)));
+
+  if (isCacheableGet) {
+    const cached = runtime.apiCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.payload;
+    }
+
+    const inflight = runtime.apiInFlight.get(cacheKey);
+    if (inflight) {
+      return inflight;
+    }
+  }
+
   const headers = {
     ...(options.headers || {})
   };
@@ -650,41 +1263,75 @@ async function api(path, options = {}) {
     headers.Authorization = `Bearer ${state.session.token}`;
   }
 
-  const response = await fetch(`${base}${path}`, {
-    ...options,
-    headers
-  });
+  const requestPromise = (async () => {
+    const response = await fetch(`${base}${path}`, {
+      ...options,
+      headers,
+      credentials: 'include'
+    });
 
-  let payload = null;
-  const contentType = String(response.headers.get('content-type') || '');
-  if (contentType.includes('application/json')) {
-    try {
-      payload = await response.json();
-    } catch (error) {
-      payload = { success: false, message: 'Invalid server response.' };
-    }
-  } else {
-    const text = await response.text();
-    if (/Authentication Required|Vercel Authentication/i.test(text)) {
-      payload = {
-        success: false,
-        message:
-          'This preview deployment is protected by Vercel login. Use the production URL or disable preview protection.'
-      };
+    let payload = null;
+    const contentType = String(response.headers.get('content-type') || '');
+    if (contentType.includes('application/json')) {
+      try {
+        payload = await response.json();
+      } catch (error) {
+        payload = { success: false, message: 'Invalid server response.' };
+      }
     } else {
-      payload = { success: false, message: 'Invalid server response.' };
+      const text = await response.text();
+      if (/Authentication Required|Vercel Authentication/i.test(text)) {
+        payload = {
+          success: false,
+          message:
+            'This preview deployment is protected by Vercel login. Use the production URL or disable preview protection.'
+        };
+      } else {
+        payload = { success: false, message: 'Invalid server response.' };
+      }
+    }
+
+    if (!response.ok || payload.success === false) {
+      throw new Error(payload.message || 'Request failed');
+    }
+
+    if (method !== 'GET') {
+      clearApiCache();
+    }
+
+    return payload;
+  })();
+
+  if (isCacheableGet) {
+    runtime.apiInFlight.set(cacheKey, requestPromise);
+  }
+
+  try {
+    const payload = await requestPromise;
+    if (isCacheableGet && ttlMs > 0) {
+      runtime.apiCache.set(cacheKey, {
+        payload,
+        expiresAt: Date.now() + ttlMs
+      });
+    }
+    return payload;
+  } finally {
+    if (isCacheableGet) {
+      runtime.apiInFlight.delete(cacheKey);
     }
   }
-
-  if (!response.ok || payload.success === false) {
-    throw new Error(payload.message || 'Request failed');
-  }
-
-  return payload;
 }
 
-function logout() {
+async function logout() {
   clearAttemptTimer();
+  try {
+    await api('/auth/logout', {
+      method: 'POST',
+      noCache: true
+    });
+  } catch (error) {
+    // Clear local session state even if the server cookie is already gone.
+  }
   saveSession(null);
   resetUiStateOnLogout();
   renderWelcome();
@@ -748,6 +1395,7 @@ function bindAccountPasswordForm() {
 
 function renderWelcome() {
   clearAttemptTimer();
+  beginNavTransition();
 
   app.innerHTML = `
     <section class="welcome-page live-welcome">
@@ -776,10 +1424,12 @@ function renderWelcome() {
   document.getElementById('studentSignInBtn').addEventListener('click', () => renderLogin('student'));
   document.getElementById('teacherSignInBtn').addEventListener('click', () => renderLogin('teacher'));
   document.getElementById('adminSignInBtn').addEventListener('click', () => renderLogin('admin'));
+  endNavTransition();
 }
 
 function renderLogin(role) {
   clearAttemptTimer();
+  beginNavTransition();
   const loginHint = getLoginHint(role);
 
   const titleMap = {
@@ -839,7 +1489,7 @@ function renderLogin(role) {
 
         const result = await api('/auth/login', {
           method: 'POST',
-          body: JSON.stringify({ institutionId, username, password })
+          body: JSON.stringify({ institutionId, username, password, rememberMe: rememberLogin })
         });
 
         if (result.data.user.role !== role) {
@@ -849,7 +1499,6 @@ function renderLogin(role) {
         }
 
         saveSession({
-          token: result.data.token,
           user: result.data.user,
           institutionId
         }, rememberLogin);
@@ -865,62 +1514,101 @@ function renderLogin(role) {
   });
 
   document.getElementById('backBtn').addEventListener('click', renderWelcome);
+  endNavTransition();
 }
 
 async function renderAdminDashboard() {
   clearAttemptTimer();
+  beginNavTransition();
 
-  const [meData, summaryResult, teachersResult, subjectsResult] =
-    await Promise.all([
-      fetchMe(),
-      api('/admin/summary'),
-      api('/admin/teachers'),
-      api('/admin/subjects')
-    ]);
+  if (state.adminTab === 'teachers') state.adminTab = 'teachers_create';
+  if (state.adminTab === 'subjects') state.adminTab = 'courses_create';
+  if (state.adminTab === 'students') state.adminTab = 'students_view';
+
+  const allowedTabs = new Set([
+    'dashboard',
+    'analytics',
+    'teachers_create',
+    'teachers_edit',
+    'teachers_reset',
+    'teachers_delete',
+    'students_view',
+    'courses_create',
+    'courses_edit',
+    'courses_delete',
+    'accounts'
+  ]);
+  if (!allowedTabs.has(state.adminTab)) {
+    state.adminTab = 'dashboard';
+  }
+
+  const user = state.session?.user || { fullName: '', username: '' };
+  const institutionId = state.session?.institutionId || '';
+  const teacherMode = state.adminTab.startsWith('teachers_')
+    ? state.adminTab.replace('teachers_', '')
+    : '';
+  const courseMode = state.adminTab.startsWith('courses_')
+    ? state.adminTab.replace('courses_', '')
+    : '';
+
+  const shouldLoadSummary = state.adminTab === 'dashboard';
+  const shouldLoadTeachers = Boolean(teacherMode);
+  const shouldLoadSubjects = state.adminTab === 'students_view' || Boolean(courseMode);
 
   const studentsQuery = toQueryString({
     q: state.adminStudentQuery,
     subjectId: state.adminSubjectFilter
   });
-  const studentsResult = await api(`/admin/students${studentsQuery}`);
 
-  let analytics = null;
-  if (state.adminTab === 'analytics') {
-    const analyticsResult = await api(
-      `/admin/analytics${toQueryString({ days: state.adminAnalyticsWindow })}`
-    );
-    analytics = analyticsResult.data.analytics || null;
-  }
+  const [summaryResult, teachersResult, subjectsResult, studentsResult, analyticsResult] =
+    await Promise.all([
+      shouldLoadSummary
+        ? api('/admin/summary')
+        : Promise.resolve({ data: { summary: { teacherCount: 0, studentCount: 0, subjectCount: 0 } } }),
+      shouldLoadTeachers ? api('/admin/teachers') : Promise.resolve({ data: { teachers: [] } }),
+      shouldLoadSubjects ? api('/admin/subjects') : Promise.resolve({ data: { subjects: [] } }),
+    state.adminTab === 'students_view' ? api(`/admin/students${studentsQuery}`) : Promise.resolve(null),
+    state.adminTab === 'analytics'
+      ? api(`/admin/analytics${toQueryString({ days: state.adminAnalyticsWindow })}`)
+      : Promise.resolve(null)
+    ]);
 
-  const user = meData.user;
   const summary = summaryResult.data.summary;
   const teachers = teachersResult.data.teachers || [];
-  const students = studentsResult.data.students || [];
+  const students = studentsResult?.data?.students || [];
   const subjects = subjectsResult.data.subjects || [];
+  const analytics = analyticsResult?.data?.analytics || null;
+
+  schedulePrefetch(
+    ['/admin/summary', '/admin/teachers', '/admin/subjects', '/admin/students'],
+    'admin-core'
+  );
+
+  teachers.forEach((teacher) => {
+    if (teacher?.username && teacher?.temporaryPassword) {
+      state.adminTeacherSecrets[teacher.username] = teacher.temporaryPassword;
+    }
+  });
+
+  const getTeacherTempPassword = (teacher) =>
+    state.adminTeacherSecrets[teacher?.username || ''] || teacher?.temporaryPassword || '';
 
   app.innerHTML = `
     <div class="dashboard-shell">
       <header class="main-nav">
         <div class="left-nav">
           ${logoMarkup(true)}
-          ${navButtonsMarkup(
-            [
-              { value: 'dashboard', label: 'Dashboard' },
-              { value: 'analytics', label: 'Analytics' },
-              { value: 'teachers', label: 'Teachers' },
-              { value: 'students', label: 'Students' },
-              { value: 'accounts', label: 'Accounts' }
-            ],
-            state.adminTab,
-            'data-admin-tab'
-          )}
+          ${adminNavMarkup(state.adminTab)}
         </div>
-        <button class="signout" id="logoutBtn">Sign Out</button>
+        <div class="top-actions">
+          <button class="signout" id="logoutBtn">Sign Out</button>
+        </div>
       </header>
 
       <main class="page container-xl">
         <h2>Welcome, ${escapeHtml(user.fullName)} 👋</h2>
-        <p class="subline">Institution ID: ${escapeHtml(meData.institution?.institutionId || state.session.institutionId)}</p>
+        <p class="subline">Institution ID: ${escapeHtml(institutionId)}</p>
+        ${smokeReportMarkup(state.qaReports.admin)}
 
         ${
           state.adminTab === 'dashboard'
@@ -928,8 +1616,8 @@ async function renderAdminDashboard() {
               <section class="stats-grid">
                 <article class="panel stat"><h3>${summary.teacherCount}</h3><p>Total Teachers</p></article>
                 <article class="panel stat"><h3>${summary.studentCount}</h3><p>Total Students</p></article>
-                <article class="panel stat"><h3>${summary.subjectCount}</h3><p>Total Subjects</p></article>
-                <article class="panel stat"><h3>${teachers.length ? Math.round((summary.studentCount / teachers.length) * 10) / 10 : 0}</h3><p>Students / Teacher</p></article>
+                <article class="panel stat"><h3>${summary.subjectCount}</h3><p>Total Courses</p></article>
+                <article class="panel stat"><h3>${summary.teacherCount ? Math.round((summary.studentCount / summary.teacherCount) * 10) / 10 : 0}</h3><p>Students / Teacher</p></article>
               </section>
             `
             : ''
@@ -977,7 +1665,7 @@ async function renderAdminDashboard() {
         }
 
         ${
-          state.adminTab === 'teachers'
+          teacherMode === 'create'
             ? `
               <section class="panel">
                 <h3>Create Teacher</h3>
@@ -1006,10 +1694,22 @@ async function renderAdminDashboard() {
                 <button id="createTeacherBtn" class="cta-main">Create Teacher Account</button>
                 <p class="auth-note" id="createTeacherStatus"></p>
               </section>
+            `
+            : ''
+        }
 
+        ${
+          teacherMode && teacherMode !== 'create'
+            ? `
               <section class="panel table-panel">
-                <h3>Teacher Accounts</h3>
-                <p class="muted">Share links are available for accounts created in this admin session.</p>
+                <h3>${
+                  teacherMode === 'edit'
+                    ? 'Edit Existing Teacher'
+                    : teacherMode === 'reset'
+                      ? 'Create New Password for Teacher'
+                      : 'Delete Teacher'
+                }</h3>
+                <p class="muted">Share credentials by WhatsApp and export all temporary passwords to CSV. If an older teacher has no temporary password, use Reset Temp.</p>
                 <button id="exportTeacherCredsCsvBtn" class="cta-soft">Export Teacher Credentials CSV</button>
                 <div class="table-wrap">
                   <table>
@@ -1030,12 +1730,14 @@ async function renderAdminDashboard() {
                           ? teachers
                               .map(
                                 (teacher) => {
-                                  const tempPassword =
-                                    state.adminTeacherSecrets[teacher.username] || '';
+                                  const tempPassword = getTeacherTempPassword(teacher);
                                   const shareMessage = encodeURIComponent(
                                     `LIFT Educations login\nInstitution ID: ${state.session.institutionId}\nUsername: ${teacher.username}\nTemporary Password: ${tempPassword}`
                                   );
                                   const whatsPhone = cleanPhone(teacher.phone);
+                                  const whatsUrl = whatsPhone
+                                    ? `https://wa.me/${whatsPhone}?text=${shareMessage}`
+                                    : `https://wa.me/?text=${shareMessage}`;
 
                                   return `
                                   <tr>
@@ -1046,8 +1748,8 @@ async function renderAdminDashboard() {
                                     <td>${escapeHtml(teacher.phone || '-')}</td>
                                     <td>
                                       ${
-                                        tempPassword && whatsPhone
-                                          ? `<a href="https://wa.me/${whatsPhone}?text=${shareMessage}" target="_blank" rel="noreferrer">WhatsApp</a>`
+                                        tempPassword
+                                          ? `<a href="${whatsUrl}" target="_blank" rel="noreferrer">WhatsApp</a>`
                                           : '-'
                                       }
                                       ${
@@ -1056,7 +1758,23 @@ async function renderAdminDashboard() {
                                           : ''
                                       }
                                     </td>
-                                    <td><button class="mini-btn danger" data-delete-teacher="${teacher._id}">Delete</button></td>
+                                    <td>
+                                      ${
+                                        teacherMode === 'edit'
+                                          ? `<button class="mini-btn" data-edit-teacher="${teacher._id}">Edit</button>`
+                                          : ''
+                                      }
+                                      ${
+                                        teacherMode === 'reset'
+                                          ? `<button class="mini-btn" data-reset-teacher-password="${teacher._id}" data-reset-teacher-username="${escapeHtml(teacher.username)}">Reset Temp</button>`
+                                          : ''
+                                      }
+                                      ${
+                                        teacherMode === 'delete'
+                                          ? `<button class="mini-btn danger" data-delete-teacher="${teacher._id}">Delete</button>`
+                                          : ''
+                                      }
+                                    </td>
                                   </tr>
                                 `;
                                 }
@@ -1073,7 +1791,96 @@ async function renderAdminDashboard() {
         }
 
         ${
-          state.adminTab === 'students'
+          courseMode === 'create'
+            ? `
+              <section class="panel">
+                <h3>Create New Course (Uniform for All Teachers)</h3>
+                <form id="adminCreateCourseForm" class="two-grid-form">
+                  <div>
+                    <label for="adminCourseName">Course Name</label>
+                    <input id="adminCourseName" type="text" required />
+                  </div>
+                  <div>
+                    <label for="adminCourseDuration">Course Duration</label>
+                    <input id="adminCourseDuration" type="text" placeholder="e.g. 6 months or 1 year" required />
+                  </div>
+                  <div>
+                    <label for="adminCourseSyllabusPdfFile">Syllabus PDF File</label>
+                    <input id="adminCourseSyllabusPdfFile" type="file" accept=".pdf,application/pdf" required />
+                  </div>
+                </form>
+                <button id="adminCreateCourseBtn" class="cta-main">Create Course</button>
+                <p class="auth-note" id="adminCreateCourseStatus"></p>
+              </section>
+            `
+            : ''
+        }
+
+        ${
+          courseMode === 'edit' || courseMode === 'delete'
+            ? `
+              <section class="panel table-panel">
+                <h3>${
+                  courseMode === 'edit' ? 'Edit Course & Syllabus Manager' : 'Delete Course'
+                }</h3>
+                <p class="muted">Teachers will use these courses while creating students, resources, class plans and tests.</p>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Course</th>
+                        <th>Duration</th>
+                        <th>Syllabus</th>
+                        <th>Last Updated</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${
+                        subjects.length
+                          ? subjects
+                              .map(
+                                (subject) => `
+                                  <tr>
+                                    <td>${escapeHtml(subject.name)}</td>
+                                    <td>${escapeHtml(subject.courseDuration || '-')}</td>
+                                    <td>${
+                                      subject.syllabusPdfUrl
+                                        ? `<a href="${escapeHtml(subject.syllabusPdfUrl)}" target="_blank" rel="noreferrer">Open Syllabus</a>`
+                                        : '-'
+                                    }</td>
+                                    <td>${formatDate(subject.updatedAt || subject.createdAt)}</td>
+                                    <td>
+                                      ${
+                                        courseMode === 'edit'
+                                          ? `<button class="mini-btn" data-admin-edit-course="${subject._id}">Edit Course</button>
+                                             <button class="mini-btn" data-admin-update-syllabus="${subject._id}">Upload New Syllabus</button>`
+                                          : ''
+                                      }
+                                      ${
+                                        courseMode === 'delete'
+                                          ? `<button class="mini-btn danger" data-admin-delete-course="${subject._id}">Delete</button>`
+                                          : ''
+                                      }
+                                    </td>
+                                  </tr>
+                                `
+                              )
+                              .join('')
+                          : '<tr><td colspan="5">No courses yet.</td></tr>'
+                      }
+                    </tbody>
+                  </table>
+                </div>
+                <input id="adminUpdateSyllabusFileInput" type="file" accept=".pdf,application/pdf" hidden />
+                <p class="auth-note" id="adminUpdateSyllabusStatus"></p>
+              </section>
+            `
+            : ''
+        }
+
+        ${
+          state.adminTab === 'students_view'
             ? `
               <section class="panel">
                 <h3>Students</h3>
@@ -1083,9 +1890,9 @@ async function renderAdminDashboard() {
                     <input id="adminStudentSearch" type="text" value="${escapeHtml(state.adminStudentQuery)}" placeholder="Type student name" />
                   </div>
                   <div>
-                    <label for="adminSubjectFilter">Filter by Subject</label>
+                    <label for="adminSubjectFilter">Filter by Course</label>
                     <select id="adminSubjectFilter">
-                      <option value="">All Subjects</option>
+                      <option value="">All Courses</option>
                       ${subjects
                         .map(
                           (subject) =>
@@ -1100,6 +1907,65 @@ async function renderAdminDashboard() {
               </section>
 
               <section class="panel table-panel">
+                <h3>Live Test Monitor</h3>
+                <p class="muted">Track ongoing tests and attendance in real time.</p>
+                ${
+                  liveTestStats.length
+                    ? liveTestStats
+                        .map(
+                          (liveTest) => `
+                            <article class="stack-item">
+                              <div class="progress-row">
+                                <div>
+                                  <p><strong>${escapeHtml(liveTest.title)}</strong></p>
+                                  <p class="muted">${escapeHtml(liveTest.subjectName || '-')} | ${escapeHtml(formatTestType(liveTest.type))} | Ends in ${escapeHtml(liveTest.remainingMinutes)} min</p>
+                                </div>
+                                <div>
+                                  <span class="alert-tag">${escapeHtml(liveTest.attendedCount)} attended</span>
+                                  <span class="alert-tag alert-tag-warn">${escapeHtml(liveTest.pendingCount)} pending</span>
+                                </div>
+                              </div>
+                              <div class="table-wrap">
+                                <table>
+                                  <thead>
+                                    <tr>
+                                      <th>Student</th>
+                                      <th>Username</th>
+                                      <th>Status</th>
+                                      <th>Submitted At</th>
+                                      <th>Score</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    ${
+                                      (liveTest.students || []).length
+                                        ? liveTest.students
+                                            .map(
+                                              (row) => `
+                                                <tr>
+                                                  <td>${escapeHtml(row.fullName || '-')}</td>
+                                                  <td>${escapeHtml(row.username || '-')}</td>
+                                                  <td>${row.attended ? '<span class="status-badge done">Attended</span>' : '<span class="status-badge pending">Pending</span>'}</td>
+                                                  <td>${row.submittedAt ? escapeHtml(formatDate(row.submittedAt)) : '-'}</td>
+                                                  <td>${row.scorePercent == null ? '-' : `${escapeHtml(row.scorePercent)}%`}</td>
+                                                </tr>
+                                              `
+                                            )
+                                            .join('')
+                                        : '<tr><td colspan="5">No students assigned.</td></tr>'
+                                    }
+                                  </tbody>
+                                </table>
+                              </div>
+                            </article>
+                          `
+                        )
+                        .join('')
+                    : '<p class="muted">No live tests are running right now.</p>'
+                }
+              </section>
+
+              <section class="panel table-panel">
                 <div class="table-wrap">
                   <table>
                     <thead>
@@ -1108,7 +1974,7 @@ async function renderAdminDashboard() {
                         <th>Username</th>
                         <th>Email</th>
                         <th>Phone</th>
-                        <th>Subjects</th>
+                        <th>Courses</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1138,16 +2004,40 @@ async function renderAdminDashboard() {
         }
 
         ${state.adminTab === 'accounts' ? accountSectionMarkup(user) : ''}
+        <button class="cta-soft mini-qa-btn floating-qa-btn" id="runQaBtn">Run QA Check</button>
       </main>
     </div>
   `;
 
-  bindTabButtons('[data-admin-tab]', (button) => {
-    state.adminTab = button.getAttribute('data-admin-tab') || 'dashboard';
-    void renderAdminDashboard();
+  document.querySelectorAll('[data-admin-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.adminTab = button.getAttribute('data-admin-tab') || 'dashboard';
+      closeOpenNavDropdowns();
+      void renderAdminDashboard();
+    });
   });
+  bindNavDropdowns();
 
   document.getElementById('logoutBtn').addEventListener('click', logout);
+
+  const runQaBtn = document.getElementById('runQaBtn');
+  if (runQaBtn) {
+    runQaBtn.addEventListener('click', async () => {
+      if (state.qaRunningRole === 'admin') return;
+      state.qaRunningRole = 'admin';
+      await withButtonLoading(runQaBtn, 'Checking...', async () => {
+        const report = await runRoleSmokeChecks('admin');
+        state.qaReports.admin = report;
+        if (report.failedCount > 0) {
+          showToast(`QA finished: ${report.failedCount} check(s) failed.`, 'error', 3200);
+        } else {
+          showToast('QA finished: all checks passed.', 'success', 2200);
+        }
+      });
+      state.qaRunningRole = '';
+      await renderAdminDashboard();
+    });
+  }
 
   const analyticsWindow = document.getElementById('adminAnalyticsWindow');
   if (analyticsWindow) {
@@ -1208,7 +2098,7 @@ async function renderAdminDashboard() {
 
           status.textContent = 'Teacher account created.';
           showToast('Teacher account created successfully.', 'success');
-          void renderAdminDashboard();
+          await renderAdminDashboard();
         } catch (error) {
           status.textContent = error.message;
           showToast(error.message, 'error');
@@ -1216,6 +2106,221 @@ async function renderAdminDashboard() {
       });
     });
   }
+
+  const adminCreateCourseBtn = document.getElementById('adminCreateCourseBtn');
+  if (adminCreateCourseBtn) {
+    adminCreateCourseBtn.addEventListener('click', async () => {
+      const status = document.getElementById('adminCreateCourseStatus');
+      const form = document.getElementById('adminCreateCourseForm');
+      if (form && !form.reportValidity()) return;
+      status.textContent = 'Creating course...';
+
+      await withButtonLoading(adminCreateCourseBtn, 'Creating...', async () => {
+        try {
+          const name = sanitizeValue(document.getElementById('adminCourseName').value);
+          const courseDuration = sanitizeValue(document.getElementById('adminCourseDuration').value);
+          const syllabusFile =
+            document.getElementById('adminCourseSyllabusPdfFile').files?.[0] || null;
+
+          if (name.length < 2) {
+            status.textContent = 'Course name must be at least 2 characters.';
+            showToast(status.textContent, 'error');
+            return;
+          }
+          if (courseDuration.length < 2) {
+            status.textContent = 'Course duration is required.';
+            showToast(status.textContent, 'error');
+            return;
+          }
+          if (!syllabusFile || !/\.pdf$/i.test(syllabusFile.name)) {
+            status.textContent = 'Please upload syllabus as a PDF file.';
+            showToast(status.textContent, 'error');
+            return;
+          }
+
+          status.textContent = 'Uploading syllabus...';
+          const uploadedSyllabus = await uploadAsset(syllabusFile, 'syllabus');
+
+          await api('/admin/subjects', {
+            method: 'POST',
+            body: JSON.stringify({
+              name,
+              courseDuration,
+              syllabusPdfUrl: uploadedSyllabus.url,
+              syllabusPdfName: syllabusFile.name
+            })
+          });
+
+          status.textContent = 'Course created.';
+          showToast('Course created successfully.', 'success');
+          await renderAdminDashboard();
+        } catch (error) {
+          status.textContent = error.message;
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  }
+
+  let adminSyllabusUpdateSubjectId = '';
+  const adminUpdateSyllabusFileInput = document.getElementById('adminUpdateSyllabusFileInput');
+  const adminUpdateSyllabusStatus = document.getElementById('adminUpdateSyllabusStatus');
+
+  document.querySelectorAll('[data-admin-update-syllabus]').forEach((button) => {
+    button.addEventListener('click', () => {
+      adminSyllabusUpdateSubjectId = button.getAttribute('data-admin-update-syllabus') || '';
+      if (!adminSyllabusUpdateSubjectId || !adminUpdateSyllabusFileInput) return;
+      adminUpdateSyllabusFileInput.value = '';
+      adminUpdateSyllabusFileInput.click();
+    });
+  });
+
+  if (adminUpdateSyllabusFileInput) {
+    adminUpdateSyllabusFileInput.addEventListener('change', async () => {
+      const syllabusFile = adminUpdateSyllabusFileInput.files?.[0] || null;
+      if (!adminSyllabusUpdateSubjectId || !syllabusFile) return;
+      if (!/\.pdf$/i.test(syllabusFile.name)) {
+        if (adminUpdateSyllabusStatus) {
+          adminUpdateSyllabusStatus.textContent = 'Please upload a PDF file.';
+        }
+        showToast('Please upload a PDF file.', 'error');
+        return;
+      }
+
+      if (adminUpdateSyllabusStatus) {
+        adminUpdateSyllabusStatus.textContent = 'Uploading new syllabus...';
+      }
+
+      try {
+        const uploadedSyllabus = await uploadAsset(syllabusFile, 'syllabus');
+        await api(`/admin/subjects/${adminSyllabusUpdateSubjectId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            syllabusPdfUrl: uploadedSyllabus.url,
+            syllabusPdfName: syllabusFile.name
+          })
+        });
+        if (adminUpdateSyllabusStatus) {
+          adminUpdateSyllabusStatus.textContent = 'Syllabus updated successfully.';
+        }
+        showToast('Syllabus updated.', 'success');
+        await renderAdminDashboard();
+      } catch (error) {
+        if (adminUpdateSyllabusStatus) {
+          adminUpdateSyllabusStatus.textContent = error.message;
+        }
+        showToast(error.message, 'error');
+      }
+    });
+  }
+
+  document.querySelectorAll('[data-admin-edit-course]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const subjectId = button.getAttribute('data-admin-edit-course');
+      if (!subjectId) return;
+      const course = subjects.find((item) => item._id === subjectId);
+      if (!course) return;
+
+      const nextName = prompt('Course name', course.name || '');
+      if (nextName === null) return;
+      const cleanName = sanitizeValue(nextName);
+      if (cleanName.length < 2) {
+        showToast('Course name must be at least 2 characters.', 'error');
+        return;
+      }
+
+      const nextDuration = prompt('Course duration', course.courseDuration || '');
+      if (nextDuration === null) return;
+      const cleanDuration = sanitizeValue(nextDuration);
+      if (cleanDuration.length < 2) {
+        showToast('Course duration is required.', 'error');
+        return;
+      }
+
+      await withButtonLoading(button, 'Saving...', async () => {
+        try {
+          await api(`/admin/subjects/${subjectId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              name: cleanName,
+              courseDuration: cleanDuration
+            })
+          });
+          showToast('Course updated successfully.', 'success');
+          await renderAdminDashboard();
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  });
+
+  document.querySelectorAll('[data-admin-delete-course]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const subjectId = button.getAttribute('data-admin-delete-course');
+      if (!subjectId) return;
+      if (
+        !confirm(
+          'Delete this course? It will be removed from student course assignments across this institution.'
+        )
+      ) {
+        return;
+      }
+
+      await withButtonLoading(button, 'Deleting...', async () => {
+        try {
+          await api(`/admin/subjects/${subjectId}`, { method: 'DELETE' });
+          showToast('Course deleted.', 'success');
+          await renderAdminDashboard();
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  });
+
+  document.querySelectorAll('[data-edit-teacher]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const teacherId = button.getAttribute('data-edit-teacher');
+      if (!teacherId) return;
+      const teacher = teachers.find((item) => item._id === teacherId);
+      if (!teacher) return;
+
+      const nextFullName = prompt('Teacher full name', teacher.fullName || '');
+      if (nextFullName === null) return;
+      const fullName = sanitizeValue(nextFullName);
+      if (fullName.length < 2) {
+        showToast('Full name must be at least 2 characters.', 'error');
+        return;
+      }
+
+      const nextUsername = prompt('Teacher username', teacher.username || '');
+      if (nextUsername === null) return;
+      const username = sanitizeValue(nextUsername).toLowerCase();
+      if (username.length < 3) {
+        showToast('Username must be at least 3 characters.', 'error');
+        return;
+      }
+
+      const nextEmail = prompt('Teacher email (optional)', teacher.email || '') ?? '';
+      const email = String(nextEmail || '').trim();
+      const nextPhone = prompt('Teacher phone (optional)', teacher.phone || '') ?? '';
+      const phone = String(nextPhone || '').trim();
+
+      await withButtonLoading(button, 'Saving...', async () => {
+        try {
+          await api(`/admin/teachers/${teacherId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ fullName, username, email, phone })
+          });
+          showToast('Teacher details updated.', 'success');
+          await renderAdminDashboard();
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  });
 
   const searchInput = document.getElementById('adminStudentSearch');
   if (searchInput) {
@@ -1240,9 +2345,10 @@ async function renderAdminDashboard() {
     button.addEventListener('click', async () => {
       const username = button.getAttribute('data-copy-teacher-creds');
       if (!username) return;
-      const tempPassword = state.adminTeacherSecrets[username];
+      const teacher = teachers.find((item) => item.username === username);
+      const tempPassword = getTeacherTempPassword(teacher);
       if (!tempPassword) {
-        showToast('Temporary password not available for this teacher in current session.', 'error');
+        showToast('Temporary password not available for this teacher.', 'error');
         return;
       }
       const copyText = [
@@ -1260,6 +2366,43 @@ async function renderAdminDashboard() {
     });
   });
 
+  document.querySelectorAll('[data-reset-teacher-password]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const teacherId = button.getAttribute('data-reset-teacher-password');
+      const teacherUsername = button.getAttribute('data-reset-teacher-username') || 'this teacher';
+      if (!teacherId) return;
+
+      const input = prompt(
+        `Set a new temporary password for ${teacherUsername}`,
+        generateTempPassword()
+      );
+      if (input === null) return;
+      const password = String(input || '').trim();
+      if (password.length < 6) {
+        showToast('Temporary password must be at least 6 characters.', 'error');
+        return;
+      }
+
+      await withButtonLoading(button, 'Saving...', async () => {
+        try {
+          const result = await api(`/admin/teachers/${teacherId}/reset-password`, {
+            method: 'POST',
+            body: JSON.stringify({ password })
+          });
+          const updatedUsername =
+            result?.data?.teacher?.username ||
+            (teacherUsername !== 'this teacher' ? teacherUsername : '');
+          const updatedPassword = result?.data?.teacher?.temporaryPassword || password;
+          if (updatedUsername) state.adminTeacherSecrets[updatedUsername] = updatedPassword;
+          showToast('Temporary password reset successfully.', 'success');
+          await renderAdminDashboard();
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  });
+
   document.querySelectorAll('[data-delete-teacher]').forEach((button) => {
     button.addEventListener('click', async () => {
       const teacherId = button.getAttribute('data-delete-teacher');
@@ -1272,7 +2415,7 @@ async function renderAdminDashboard() {
         try {
           await api(`/admin/teachers/${teacherId}`, { method: 'DELETE' });
           showToast('Teacher deleted.', 'success');
-          void renderAdminDashboard();
+          await renderAdminDashboard();
         } catch (error) {
           showToast(error.message, 'error');
         }
@@ -1287,7 +2430,7 @@ async function renderAdminDashboard() {
         .map((teacher) => ({
           fullName: teacher.fullName || '',
           username: teacher.username || '',
-          tempPassword: state.adminTeacherSecrets[teacher.username] || '',
+          tempPassword: getTeacherTempPassword(teacher),
           email: teacher.email || '',
           phone: teacher.phone || '',
           institutionId: state.session.institutionId
@@ -1295,7 +2438,7 @@ async function renderAdminDashboard() {
         .filter((row) => row.tempPassword);
 
       if (!rows.length) {
-        showToast('No temporary passwords available in this session to export.', 'error');
+        showToast('No temporary passwords available to export.', 'error');
         return;
       }
 
@@ -1309,15 +2452,32 @@ async function renderAdminDashboard() {
   }
 
   bindAccountPasswordForm();
+  endNavTransition();
 }
 
 async function renderTeacherDashboard() {
   clearAttemptTimer();
+  beginNavTransition();
 
-  const [meData, subjectsResult] = await Promise.all([
-    fetchMe(),
-    api('/teacher/subjects')
-  ]);
+  if (state.teacherTab === 'tests') state.teacherTab = 'assessment_conduct';
+  if (state.teacherTab === 'assessment') state.teacherTab = 'assessment_results';
+
+  const user = state.session?.user || { fullName: '', username: '' };
+  const shouldLoadSubjects = state.teacherTab !== 'accounts';
+  const shouldLoadStudents =
+    state.teacherTab === 'students' ||
+    state.teacherTab === 'assessment_conduct' ||
+    state.teacherTab === 'dashboard';
+  const shouldLoadResources = state.teacherTab === 'resources' || state.teacherTab === 'dashboard';
+  const shouldLoadTests = state.teacherTab === 'assessment_conduct' || state.teacherTab === 'dashboard';
+  const shouldLoadDashboardPlans = state.teacherTab === 'dashboard';
+  const shouldLoadClassPlans = state.teacherTab === 'class_planner';
+  const shouldLoadAssessments = state.teacherTab === 'assessment_results';
+  const shouldLoadLiveStats = state.teacherTab === 'assessment_results';
+
+  const subjectsResult = shouldLoadSubjects
+    ? await api('/teacher/subjects')
+    : { data: { subjects: [] } };
 
   const subjects = subjectsResult.data.subjects || [];
   if (state.teacherSubjectFilter && !subjects.some((item) => item._id === state.teacherSubjectFilter)) {
@@ -1342,11 +2502,78 @@ async function renderTeacherDashboard() {
     q: state.teacherTab === 'students' ? state.teacherStudentQuery : '',
     subjectId: state.teacherTab === 'students' ? state.teacherSubjectFilter : ''
   });
-  const studentsResult = await api(`/teacher/students${studentQuery}`);
+  const studentsPromise = shouldLoadStudents
+    ? api(`/teacher/students${state.teacherTab === 'students' ? studentQuery : ''}`)
+    : Promise.resolve({ data: { students: [] } });
+
+  const resourcesQuery =
+    state.teacherTab === 'resources'
+      ? toQueryString({
+          subjectId: state.teacherResourceSubjectId,
+          resourceType: state.teacherResourceType,
+          q: state.teacherResourceSearch
+        })
+      : '';
+  const resourcesPromise = shouldLoadResources
+    ? api(`/teacher/resources${resourcesQuery}`)
+    : Promise.resolve({ data: { resources: [] } });
+
+  const testsQuery = toQueryString({
+    subjectId: state.teacherTestSubjectId
+  });
+  const testsPromise = shouldLoadTests
+    ? api(`/teacher/tests${testsQuery}`)
+    : Promise.resolve({ data: { tests: [] } });
+
+  const dashboardPlansPromise = shouldLoadDashboardPlans
+    ? api(`/teacher/class-plans${toQueryString({ date: todayIsoDate() })}`)
+    : Promise.resolve({ data: { plans: [] } });
+
+  const classPlansPromise = shouldLoadClassPlans
+    ? api(
+        `/teacher/class-plans${toQueryString({ date: state.teacherClassPlanDate || todayIsoDate() })}`
+      )
+    : Promise.resolve({ data: { plans: [] } });
+
+  const assessmentsPromise = shouldLoadAssessments
+    ? api(
+        `/teacher/assessments${toQueryString({
+          subjectId: state.teacherAssessmentSubjectId,
+          type: state.teacherAssessmentType,
+          status: state.teacherAssessmentStatus,
+          q: state.teacherAssessmentQuery
+        })}`
+      )
+    : Promise.resolve({ data: { assessments: [] } });
+
+  const liveStatsPromise = shouldLoadLiveStats
+    ? api('/teacher/tests/live-stats')
+    : Promise.resolve({ data: { liveTests: [] } });
+
+  const [
+    studentsResult,
+    resourcesResult,
+    testsResult,
+    dashboardPlansResult,
+    classPlansResult,
+    assessmentsResult,
+    liveStatsResult
+  ] = await Promise.all([
+    studentsPromise,
+    resourcesPromise,
+    testsPromise,
+    dashboardPlansPromise,
+    classPlansPromise,
+    assessmentsPromise,
+    liveStatsPromise
+  ]);
+
   const students = studentsResult.data.students || [];
   const availableStudentsForTest = state.teacherTestSubjectId
     ? students.filter((student) =>
-        (student.subjects || []).some((item) => item.id === state.teacherTestSubjectId)
+        (student.subjects || []).some(
+          (item) => resolveSubjectId(item) === state.teacherTestSubjectId
+        )
       )
     : [];
 
@@ -1354,91 +2581,68 @@ async function renderTeacherDashboard() {
     state.teacherTestAudienceMode = 'all';
   }
 
-  const allowedTestStudentIds = new Set(availableStudentsForTest.map((student) => student._id));
+  const allowedTestStudentIds = new Set(
+    availableStudentsForTest.map((student) => resolveEntityId(student)).filter(Boolean)
+  );
   state.teacherTestSelectedStudentIds = (state.teacherTestSelectedStudentIds || []).filter((studentId) =>
     allowedTestStudentIds.has(studentId)
   );
 
-  let resources = [];
-  if (state.teacherTab === 'resources' || state.teacherTab === 'dashboard') {
-    const resourcesQuery =
-      state.teacherTab === 'resources'
-        ? toQueryString({
-            subjectId: state.teacherResourceSubjectId,
-            resourceType: state.teacherResourceType,
-            q: state.teacherResourceSearch
-          })
-        : '';
-    const resourceResult = await api(`/teacher/resources${resourcesQuery}`);
-    resources = resourceResult.data.resources || [];
+  const resources = resourcesResult.data.resources || [];
+  const tests = testsResult.data.tests || [];
+  if (state.teacherViewedTestId && !tests.some((test) => test._id === state.teacherViewedTestId)) {
+    state.teacherViewedTestId = '';
+  }
+  const viewedTest = tests.find((test) => test._id === state.teacherViewedTestId) || null;
+  if (
+    state.teacherReconductDraft?.sourceTestId &&
+    !tests.some((test) => test._id === state.teacherReconductDraft.sourceTestId)
+  ) {
+    state.teacherReconductDraft = null;
   }
 
-  let tests = [];
-  if (state.teacherTab === 'tests' || state.teacherTab === 'dashboard') {
-    const testsQuery = toQueryString({
-      subjectId: state.teacherTestSubjectId
-    });
-    const testsResult = await api(`/teacher/tests${testsQuery}`);
-    tests = testsResult.data.tests || [];
-  }
-
-  let dashboardClassPlans = [];
-  if (state.teacherTab === 'dashboard') {
-    const dashboardPlansResult = await api(
-      `/teacher/class-plans${toQueryString({ date: todayIsoDate() })}`
+  const reconductStudentPool = state.teacherReconductDraft
+    ? students.filter((student) =>
+        (student.subjects || []).some(
+          (item) => resolveSubjectId(item) === state.teacherReconductDraft.subjectId
+        )
+      )
+    : [];
+  if (state.teacherReconductDraft) {
+    const allowed = new Set(
+      reconductStudentPool.map((item) => resolveEntityId(item)).filter(Boolean)
     );
-    dashboardClassPlans = dashboardPlansResult.data.plans || [];
-  }
-
-  let classPlans = [];
-  if (state.teacherTab === 'class_planner') {
-    const classPlansResult = await api(
-      `/teacher/class-plans${toQueryString({ date: state.teacherClassPlanDate || todayIsoDate() })}`
+    state.teacherReconductDraft.selectedStudentIds = (state.teacherReconductDraft.selectedStudentIds || []).filter(
+      (studentId) => allowed.has(studentId)
     );
-    classPlans = classPlansResult.data.plans || [];
   }
 
-  let assessments = [];
-  if (state.teacherTab === 'assessment') {
-    const assessmentResult = await api(
-      `/teacher/assessments${toQueryString({
-        subjectId: state.teacherAssessmentSubjectId,
-        type: state.teacherAssessmentType,
-        status: state.teacherAssessmentStatus,
-        q: state.teacherAssessmentQuery
-      })}`
-    );
-    assessments = assessmentResult.data.assessments || [];
-  }
+  const dashboardClassPlans = dashboardPlansResult.data.plans || [];
+  const classPlans = classPlansResult.data.plans || [];
+  const assessments = assessmentsResult.data.assessments || [];
+  const liveTestStats = liveStatsResult.data.liveTests || [];
 
-  const user = meData.user;
+  schedulePrefetch(
+    ['/teacher/subjects', '/teacher/students', '/teacher/resources', '/teacher/tests', '/teacher/class-plans'],
+    'teacher-core'
+  );
 
   app.innerHTML = `
     <div class="dashboard-shell">
       <header class="main-nav">
         <div class="left-nav">
           ${logoMarkup(true)}
-          ${navButtonsMarkup(
-            [
-              { value: 'dashboard', label: 'Dashboard' },
-              { value: 'subjects', label: 'Subjects' },
-              { value: 'students', label: 'Students' },
-              { value: 'class_planner', label: 'Class Planner' },
-              { value: 'resources', label: 'Upload Resources' },
-              { value: 'tests', label: 'Conduct Test' },
-              { value: 'assessment', label: 'Assessment' },
-              { value: 'accounts', label: 'Accounts' }
-            ],
-            state.teacherTab,
-            'data-teacher-tab'
-          )}
+          ${teacherNavMarkup(state.teacherTab)}
         </div>
-        <button class="signout" id="logoutBtn">Sign Out</button>
+        <div class="top-actions">
+          <button class="signout" id="logoutBtn">Sign Out</button>
+        </div>
       </header>
 
       <main class="page container-xl">
         <h2>Welcome, ${escapeHtml(user.fullName)} 👋</h2>
         <p class="subline">Manage classes, subjects, students and tests from one place.</p>
+        ${smokeReportMarkup(state.qaReports.teacher)}
 
         ${
           state.teacherTab === 'dashboard'
@@ -1480,32 +2684,16 @@ async function renderTeacherDashboard() {
         ${
           state.teacherTab === 'subjects'
             ? `
-              <section class="panel">
-                <h3>Create Subject (Syllabus Required)</h3>
-                <form id="createSubjectForm" class="two-grid-form">
-                  <div>
-                    <label for="subjectName">Subject Name</label>
-                    <input id="subjectName" type="text" required />
-                  </div>
-                  <div>
-                    <label for="syllabusPdfFile">Syllabus PDF File</label>
-                    <input id="syllabusPdfFile" type="file" accept=".pdf,application/pdf" required />
-                  </div>
-                </form>
-                <button id="createSubjectBtn" class="cta-main">Create Subject</button>
-                <p class="auth-note" id="createSubjectStatus"></p>
-              </section>
-
               <section class="panel table-panel">
                 <h3>Syllabus Manager</h3>
+                <p class="muted">Subjects and syllabus are managed by Admin for consistency across teachers.</p>
                 <div class="table-wrap">
                   <table>
                     <thead>
                       <tr>
                         <th>Subject</th>
                         <th>Syllabus</th>
-                        <th>Created</th>
-                        <th>Action</th>
+                        <th>Last Updated</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1521,22 +2709,16 @@ async function renderTeacherDashboard() {
                                         ? `<a href="${escapeHtml(subject.syllabusPdfUrl)}" target="_blank" rel="noreferrer">Open Syllabus</a>`
                                         : '-'
                                     }</td>
-                                    <td>${formatDate(subject.createdAt)}</td>
-                                    <td>
-                                      <button class="mini-btn" data-update-syllabus="${subject._id}">Upload New Syllabus</button>
-                                      <button class="mini-btn danger" data-delete-subject="${subject._id}">Delete</button>
-                                    </td>
+                                    <td>${formatDate(subject.updatedAt || subject.createdAt)}</td>
                                   </tr>
                                 `
                               )
                               .join('')
-                          : '<tr><td colspan="4">No subjects yet.</td></tr>'
+                          : '<tr><td colspan="3">No subjects created by Admin yet.</td></tr>'
                       }
                     </tbody>
                   </table>
                 </div>
-                <input id="updateSyllabusFileInput" type="file" accept=".pdf,application/pdf" hidden />
-                <p class="auth-note" id="updateSyllabusStatus"></p>
               </section>
             `
             : ''
@@ -1635,7 +2817,9 @@ async function renderTeacherDashboard() {
                               .map((student) => {
                                 const whatsPhone = cleanPhone(student.phone);
                                 const tempPassword =
-                                  state.teacherStudentSecrets[student.username] || '';
+                                  state.teacherStudentSecrets[student.username] ||
+                                  student.temporaryPassword ||
+                                  '';
                                 const shareText = encodeURIComponent(
                                   `LIFT Educations login\nInstitution ID: ${state.session.institutionId}\nUsername: ${student.username}${
                                     tempPassword ? `\nTemporary Password: ${tempPassword}` : ''
@@ -1953,10 +3137,11 @@ async function renderTeacherDashboard() {
         }
 
         ${
-          state.teacherTab === 'tests'
+          state.teacherTab === 'assessment_conduct'
             ? `
               <section class="panel">
-                <h3>Create Test</h3>
+                <h3>Conduct Test</h3>
+                <p class="muted">Choose test format from the dropdown, add questions, and optionally schedule an attendance window.</p>
                 <form id="createTestForm" class="two-grid-form">
                   <div>
                     <label for="testSubjectId">Subject</label>
@@ -1970,23 +3155,76 @@ async function renderTeacherDashboard() {
                     <input id="testTitle" type="text" required />
                   </div>
                   <div>
-                    <label for="testType">Type</label>
+                    <label for="testType">Test Mode</label>
                     <select id="testType">
-                      <option value="mcq" ${state.teacherTestType === 'mcq' ? 'selected' : ''}>MCQ (20 Questions / 5 Minutes)</option>
-                      <option value="true_false" ${state.teacherTestType === 'true_false' ? 'selected' : ''}>True / False (20 Questions / 5 Minutes)</option>
-                      <option value="long" ${state.teacherTestType === 'long' ? 'selected' : ''}>Long Format</option>
-                      <option value="short" ${state.teacherTestType === 'short' ? 'selected' : ''}>Short Answer</option>
+                      <option value="mcq" ${state.teacherTestType === 'mcq' ? 'selected' : ''}>MCQ</option>
+                      <option value="pdf_upload" ${state.teacherTestType === 'pdf_upload' ? 'selected' : ''}>Upload Questions as PDF</option>
                     </select>
                   </div>
-                  <div>
-                    <label for="testDuration">Duration Minutes (Subjective only)</label>
-                    <select id="testDuration">
-                      <option value="30">30</option>
-                      <option value="60">60</option>
-                      <option value="90">90</option>
-                      <option value="120">120</option>
-                    </select>
-                  </div>
+                  ${
+                    state.teacherTestType === 'mcq'
+                      ? `
+                        <div>
+                          <label for="mcqQuestionCount">Number of Questions (MCQ)</label>
+                          <input
+                            id="mcqQuestionCount"
+                            type="number"
+                            min="${MCQ_MIN_QUESTION_COUNT}"
+                            max="${MCQ_MAX_QUESTION_COUNT}"
+                            value="${escapeHtml(state.teacherMcqQuestionCount || '')}"
+                            placeholder="Choose question count"
+                            required
+                          />
+                        </div>
+                        <div>
+                          <label for="testDuration">Duration Minutes (MCQ)</label>
+                          <select id="testDuration">
+                            <option value="5" ${Number(state.teacherMcqDurationMinutes) === 5 ? 'selected' : ''}>5</option>
+                            <option value="10" ${Number(state.teacherMcqDurationMinutes) === 10 ? 'selected' : ''}>10</option>
+                            <option value="15" ${Number(state.teacherMcqDurationMinutes) === 15 ? 'selected' : ''}>15</option>
+                            <option value="20" ${Number(state.teacherMcqDurationMinutes) === 20 ? 'selected' : ''}>20</option>
+                            <option value="30" ${Number(state.teacherMcqDurationMinutes) === 30 ? 'selected' : ''}>30</option>
+                            <option value="45" ${Number(state.teacherMcqDurationMinutes) === 45 ? 'selected' : ''}>45</option>
+                            <option value="60" ${Number(state.teacherMcqDurationMinutes) === 60 ? 'selected' : ''}>60</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label for="mcqCorrectMark">Marks for Right Answer</label>
+                          <input
+                            id="mcqCorrectMark"
+                            type="number"
+                            min="0.01"
+                            max="100"
+                            step="0.01"
+                            value="${escapeHtml(state.teacherMcqCorrectMark)}"
+                            required
+                          />
+                        </div>
+                        <div>
+                          <label for="mcqWrongMark">Marks for Wrong Answer</label>
+                          <input
+                            id="mcqWrongMark"
+                            type="number"
+                            min="-100"
+                            max="0"
+                            step="0.01"
+                            value="${escapeHtml(state.teacherMcqWrongMark)}"
+                            required
+                          />
+                        </div>
+                      `
+                      : `
+                        <div>
+                          <label for="testDuration">Duration Minutes (PDF Upload)</label>
+                          <select id="testDuration">
+                            <option value="30" ${Number(state.teacherPdfDurationMinutes) === 30 ? 'selected' : ''}>30</option>
+                            <option value="60" ${Number(state.teacherPdfDurationMinutes) === 60 ? 'selected' : ''}>60</option>
+                            <option value="90" ${Number(state.teacherPdfDurationMinutes) === 90 ? 'selected' : ''}>90</option>
+                            <option value="120" ${Number(state.teacherPdfDurationMinutes) === 120 ? 'selected' : ''}>120</option>
+                          </select>
+                        </div>
+                      `
+                  }
                   <div>
                     <label for="testAudienceMode">Audience</label>
                     <select id="testAudienceMode">
@@ -1994,7 +3232,58 @@ async function renderTeacherDashboard() {
                       <option value="selected" ${state.teacherTestAudienceMode === 'selected' ? 'selected' : ''}>Selected students only</option>
                     </select>
                   </div>
+                  <div>
+                    <label for="testScheduleEnabled">Schedule Window</label>
+                    <label class="option-row">
+                      <input id="testScheduleEnabled" type="checkbox" ${state.teacherTestScheduleEnabled ? 'checked' : ''} />
+                      <span>Enable schedule (example: 5:00 PM to 7:00 PM)</span>
+                    </label>
+                  </div>
                 </form>
+
+                ${
+                  state.teacherTestScheduleEnabled
+                    ? `
+                      <section class="builder-box">
+                        <h4>Test Availability Window</h4>
+                        <div class="two-grid-form">
+                          <div>
+                            <label for="testScheduleDate">Date</label>
+                            <input id="testScheduleDate" type="date" value="${escapeHtml(state.teacherTestScheduleDate || todayIsoDate())}" required />
+                          </div>
+                          <div>
+                            <label for="testScheduleStartTime">Start Time</label>
+                            <input id="testScheduleStartTime" type="time" value="${escapeHtml(state.teacherTestScheduleStartTime || '17:00')}" required />
+                          </div>
+                          <div>
+                            <label for="testScheduleEndTime">End Time</label>
+                            <input id="testScheduleEndTime" type="time" value="${escapeHtml(state.teacherTestScheduleEndTime || '19:00')}" required />
+                          </div>
+                        </div>
+                      </section>
+                    `
+                    : ''
+                }
+
+                ${
+                  state.teacherTestType === 'pdf_upload'
+                    ? `
+                      <section class="builder-box">
+                        <div class="two-grid-form">
+                          <div>
+                            <label for="testPdfQuestionsFile">Upload Questions PDF</label>
+                            <input id="testPdfQuestionsFile" type="file" accept=".pdf,application/pdf" required />
+                          </div>
+                          <div>
+                            <label for="testPdfAnswerKeyFile">Upload Answer Key PDF</label>
+                            <input id="testPdfAnswerKeyFile" type="file" accept=".pdf,application/pdf" required />
+                          </div>
+                        </div>
+                        <p class="muted">Students will attempt in-system. The uploaded answer-key PDF will be available in view-only mode after submission.</p>
+                      </section>
+                    `
+                    : ''
+                }
 
                 ${
                   state.teacherTestAudienceMode === 'selected'
@@ -2014,18 +3303,20 @@ async function renderTeacherDashboard() {
                               ? `
                                 <div class="target-student-list">
                                   ${availableStudentsForTest
-                                    .map(
-                                      (student) => `
+                                    .map((student) => {
+                                      const studentId = resolveEntityId(student);
+                                      if (!studentId) return '';
+                                      return `
                                         <label class="target-student-item">
                                           <input
                                             type="checkbox"
-                                            data-test-target-student="${student._id}"
-                                            ${state.teacherTestSelectedStudentIds.includes(student._id) ? 'checked' : ''}
+                                            data-test-target-student="${studentId}"
+                                            ${state.teacherTestSelectedStudentIds.includes(studentId) ? 'checked' : ''}
                                           />
                                           <span>${escapeHtml(student.fullName)} <small>@${escapeHtml(student.username)}</small></span>
                                         </label>
-                                      `
-                                    )
+                                      `;
+                                    })
                                     .join('')}
                                 </div>
                               `
@@ -2037,16 +3328,15 @@ async function renderTeacherDashboard() {
                 }
 
                 ${
-                  state.teacherTestType === 'mcq' || state.teacherTestType === 'true_false'
-                    ? objectiveQuestionBuilderMarkup(state.teacherTestType)
-                    : `
-                      <label for="testQuestionsInput">${
-                        state.teacherTestType === 'short'
-                          ? 'Short-answer questions: one question per line'
-                          : 'Long-format questions: one question per line'
-                      }</label>
-                      <textarea id="testQuestionsInput" rows="8" placeholder="Write question 1 on first line"></textarea>
-                    `
+                  state.teacherTestType === 'mcq'
+                    ? getValidMcqQuestionCount(state.teacherMcqQuestionCount)
+                      ? objectiveQuestionBuilderMarkup(state.teacherMcqQuestionCount)
+                      : `
+                        <section class="builder-box">
+                          <p class="muted">Choose the number of MCQ questions to open the question form.</p>
+                        </section>
+                      `
+                    : ''
                 }
 
                 <button id="createTestBtn" class="cta-main">Publish Test</button>
@@ -2063,7 +3353,10 @@ async function renderTeacherDashboard() {
                         <th>Type</th>
                         <th>Audience</th>
                         <th>Duration</th>
+                        <th>Schedule</th>
                         <th>Created</th>
+                        <th>View Test</th>
+                        <th>Edit & Re-conduct</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2077,27 +3370,45 @@ async function renderTeacherDashboard() {
                                     <td>${escapeHtml(formatTestType(test.type))}</td>
                                     <td>${test.audienceMode === 'selected' ? 'Selected Students' : 'All Students'}</td>
                                     <td>${escapeHtml(test.durationMinutes)} min</td>
+                                    <td>${
+                                      test.scheduledStartAt && test.scheduledEndAt
+                                        ? `${escapeHtml(formatDate(test.scheduledStartAt))}<br /><small>${escapeHtml(formatTime(test.scheduledEndAt))}</small>`
+                                        : 'Immediate'
+                                    }</td>
                                     <td>${formatDate(test.createdAt)}</td>
+                                    <td>
+                                      <button class="mini-btn" data-view-test="${test._id}">
+                                        ${state.teacherViewedTestId === test._id ? 'Viewing' : 'View Test'}
+                                      </button>
+                                    </td>
+                                    <td>
+                                      ${
+                                        test.type === 'mcq'
+                                          ? `<button class="mini-btn" data-edit-reconduct-test="${test._id}">Edit & Re-conduct</button>`
+                                          : '<span class="muted">MCQ only</span>'
+                                      }
+                                    </td>
                                   </tr>
                                 `
                               )
                               .join('')
-                          : '<tr><td colspan="5">No tests published.</td></tr>'
+                          : '<tr><td colspan="8">No tests published.</td></tr>'
                       }
                     </tbody>
                   </table>
                 </div>
               </section>
+
             `
             : ''
         }
 
         ${
-          state.teacherTab === 'assessment'
+          state.teacherTab === 'assessment_results'
             ? `
               <section class="panel">
-                <h3>Assessment</h3>
-                <p class="muted">Review student submissions and assign marks for short-form and long-form tests.</p>
+                <h3>Evaluate Student Results</h3>
+                <p class="muted">Review student submissions and assign marks for PDF-upload tests.</p>
                 <div class="two-grid-form">
                   <div>
                     <label for="teacherAssessmentQuery">Search Student</label>
@@ -2121,10 +3432,8 @@ async function renderTeacherDashboard() {
                     <label for="teacherAssessmentType">Type</label>
                     <select id="teacherAssessmentType">
                       <option value="">All</option>
-                      <option value="short" ${state.teacherAssessmentType === 'short' ? 'selected' : ''}>Short Answer</option>
-                      <option value="long" ${state.teacherAssessmentType === 'long' ? 'selected' : ''}>Long Answer</option>
                       <option value="mcq" ${state.teacherAssessmentType === 'mcq' ? 'selected' : ''}>MCQ</option>
-                      <option value="true_false" ${state.teacherAssessmentType === 'true_false' ? 'selected' : ''}>True / False</option>
+                      <option value="long" ${state.teacherAssessmentType === 'long' ? 'selected' : ''}>Upload Questions as PDF</option>
                     </select>
                   </div>
                   <div>
@@ -2139,6 +3448,65 @@ async function renderTeacherDashboard() {
               </section>
 
               <section class="panel table-panel">
+                <h3>Live Test Monitor</h3>
+                <p class="muted">Track ongoing tests and attendance in real time.</p>
+                ${
+                  liveTestStats.length
+                    ? liveTestStats
+                        .map(
+                          (liveTest) => `
+                            <article class="stack-item">
+                              <div class="progress-row">
+                                <div>
+                                  <p><strong>${escapeHtml(liveTest.title)}</strong></p>
+                                  <p class="muted">${escapeHtml(liveTest.subjectName || '-')} | ${escapeHtml(formatTestType(liveTest.type))} | Ends in ${escapeHtml(liveTest.remainingMinutes)} min</p>
+                                </div>
+                                <div>
+                                  <span class="alert-tag">${escapeHtml(liveTest.attendedCount)} attended</span>
+                                  <span class="alert-tag alert-tag-warn">${escapeHtml(liveTest.pendingCount)} pending</span>
+                                </div>
+                              </div>
+                              <div class="table-wrap">
+                                <table>
+                                  <thead>
+                                    <tr>
+                                      <th>Student</th>
+                                      <th>Username</th>
+                                      <th>Status</th>
+                                      <th>Submitted At</th>
+                                      <th>Score</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    ${
+                                      (liveTest.students || []).length
+                                        ? liveTest.students
+                                            .map(
+                                              (row) => `
+                                                <tr>
+                                                  <td>${escapeHtml(row.fullName || '-')}</td>
+                                                  <td>${escapeHtml(row.username || '-')}</td>
+                                                  <td>${row.attended ? '<span class="status-badge done">Attended</span>' : '<span class="status-badge pending">Pending</span>'}</td>
+                                                  <td>${row.submittedAt ? escapeHtml(formatDate(row.submittedAt)) : '-'}</td>
+                                                  <td>${row.scorePercent == null ? '-' : `${escapeHtml(row.scorePercent)}%`}</td>
+                                                </tr>
+                                              `
+                                            )
+                                            .join('')
+                                        : '<tr><td colspan="5">No assigned students for this live test.</td></tr>'
+                                    }
+                                  </tbody>
+                                </table>
+                              </div>
+                            </article>
+                          `
+                        )
+                        .join('')
+                    : '<p class="muted">No live tests right now. Schedule a test window to track it here.</p>'
+                }
+              </section>
+
+              <section class="panel table-panel">
                 <div class="table-wrap">
                   <table>
                     <thead>
@@ -2148,7 +3516,7 @@ async function renderTeacherDashboard() {
                         <th>Subject</th>
                         <th>Test</th>
                         <th>Type</th>
-                        <th>Score</th>
+                        <th>Marks</th>
                         <th>Answers</th>
                         <th>Grade</th>
                       </tr>
@@ -2158,10 +3526,11 @@ async function renderTeacherDashboard() {
                         assessments.length
                           ? assessments
                               .map((attempt) => {
-                                const isSubjective =
-                                  attempt.type === 'short' || attempt.type === 'long';
+                                const isSubjective = attempt.type === 'long';
+                                const rawMarks =
+                                  attempt.assignedMarks == null ? attempt.scorePercent : attempt.assignedMarks;
                                 const scoreText =
-                                  attempt.scorePercent == null ? 'Pending' : `${attempt.scorePercent}%`;
+                                  rawMarks == null ? 'Pending' : `${Number(rawMarks).toFixed(2)}`;
                                 const gradeInputId = `assessment-marks-${attempt.id}`;
                                 const feedbackInputId = `assessment-feedback-${attempt.id}`;
                                 return `
@@ -2207,131 +3576,203 @@ async function renderTeacherDashboard() {
         }
 
         ${state.teacherTab === 'accounts' ? accountSectionMarkup(user) : ''}
+        <button class="cta-soft mini-qa-btn floating-qa-btn" id="runQaBtn">Run QA Check</button>
       </main>
+
+      ${
+        viewedTest
+          ? `
+            <div class="test-modal-backdrop" data-close-view-test></div>
+            <section class="test-modal" role="dialog" aria-modal="true" aria-label="View test downloads">
+              <div class="test-modal-card">
+                <div class="progress-row">
+                  <h3>View Test: ${escapeHtml(viewedTest.title)}</h3>
+                  <button class="mini-btn" data-close-view-test>Close</button>
+                </div>
+                <p class="muted">
+                  ${escapeHtml(formatTestType(viewedTest.type))} | ${escapeHtml(viewedTest.durationMinutes)} min | ${
+                    viewedTest.scheduledStartAt && viewedTest.scheduledEndAt
+                      ? `Window: ${escapeHtml(formatTestWindow(viewedTest))}`
+                      : 'Window: Immediate'
+                  }
+                </p>
+                ${
+                  viewedTest.type === 'mcq'
+                    ? `<p class="muted">Marks: +${escapeHtml(viewedTest.mcqCorrectMark ?? 1)} for right, ${escapeHtml(viewedTest.mcqWrongMark ?? 0)} for wrong.</p>`
+                    : ''
+                }
+                <div class="button-row">
+                  ${
+                    viewedTest.type === 'mcq'
+                      ? `
+                        <button class="mini-btn" data-download-viewed-combined="${viewedTest._id}">
+                          Download Test + Answer Key PDF
+                        </button>
+                      `
+                      : `
+                        <button class="mini-btn" data-download-viewed-questions="${viewedTest._id}">
+                          Download Questions PDF
+                        </button>
+                        <button class="mini-btn" data-download-viewed-answer-key="${viewedTest._id}">
+                          Download Answer Key PDF
+                        </button>
+                      `
+                  }
+                </div>
+              </div>
+            </section>
+          `
+          : ''
+      }
+
+      ${
+        state.teacherReconductDraft
+          ? `
+            <div class="test-modal-backdrop" data-close-reconduct-test></div>
+            <section class="test-modal" role="dialog" aria-modal="true" aria-label="Edit and reconduct test">
+              <div class="test-modal-card">
+                <div class="progress-row">
+                  <h3>Edit & Re-conduct MCQ Test</h3>
+                  <button class="mini-btn" data-close-reconduct-test>Close</button>
+                </div>
+                <p class="muted">Update questions/settings and publish this as a new test for selected students.</p>
+
+                <div class="two-grid-form">
+                  <div>
+                    <label for="reconductTitle">Test Title</label>
+                    <input id="reconductTitle" type="text" value="${escapeHtml(state.teacherReconductDraft.title)}" />
+                  </div>
+                  <div>
+                    <label for="reconductDuration">Duration (Minutes)</label>
+                    <input id="reconductDuration" type="number" min="1" max="180" value="${escapeHtml(state.teacherReconductDraft.durationMinutes)}" />
+                  </div>
+                  <div>
+                    <label for="reconductCorrectMark">Marks for Right Answer</label>
+                    <input id="reconductCorrectMark" type="number" min="0.01" max="100" step="0.01" value="${escapeHtml(state.teacherReconductDraft.mcqCorrectMark)}" />
+                  </div>
+                  <div>
+                    <label for="reconductWrongMark">Marks for Wrong Answer</label>
+                    <input id="reconductWrongMark" type="number" min="-100" max="0" step="0.01" value="${escapeHtml(state.teacherReconductDraft.mcqWrongMark)}" />
+                  </div>
+                  <div>
+                    <label for="reconductAudienceMode">Audience</label>
+                    <select id="reconductAudienceMode">
+                      <option value="all" ${state.teacherReconductDraft.audienceMode === 'all' ? 'selected' : ''}>All students in subject</option>
+                      <option value="selected" ${state.teacherReconductDraft.audienceMode === 'selected' ? 'selected' : ''}>Selected students only</option>
+                    </select>
+                  </div>
+                </div>
+
+                ${
+                  state.teacherReconductDraft.audienceMode === 'selected'
+                    ? `
+                      <div class="test-audience-panel">
+                        <div class="progress-row">
+                          <h4>Select Students</h4>
+                          <div class="button-row">
+                            <button type="button" class="mini-btn" id="reconductSelectAllBtn">All</button>
+                            <button type="button" class="mini-btn" id="reconductClearAllBtn">Clear</button>
+                          </div>
+                        </div>
+                        ${
+                          reconductStudentPool.length
+                            ? `
+                              <div class="target-student-list">
+                                ${reconductStudentPool
+                                  .map((student) => {
+                                    const studentId = resolveEntityId(student);
+                                    if (!studentId) return '';
+                                    return `
+                                      <label class="target-student-item">
+                                        <input
+                                          type="checkbox"
+                                          data-reconduct-student="${studentId}"
+                                          ${state.teacherReconductDraft.selectedStudentIds.includes(studentId) ? 'checked' : ''}
+                                        />
+                                        <span>${escapeHtml(student.fullName)} <small>@${escapeHtml(student.username)}</small></span>
+                                      </label>
+                                    `;
+                                  })
+                                  .join('')}
+                              </div>
+                            `
+                            : '<p class="muted">No students found in this subject.</p>'
+                        }
+                      </div>
+                    `
+                    : ''
+                }
+
+                <section class="builder-box">
+                  <h4>Questions (${escapeHtml((state.teacherReconductDraft.questions || []).length)})</h4>
+                  <div class="objective-builder-grid">
+                    ${(state.teacherReconductDraft.questions || [])
+                      .map(
+                        (question, index) => `
+                          <article class="question-builder-card">
+                            <h4>Question ${index + 1}</h4>
+                            <input id="reconduct-q-${index}" type="text" value="${escapeHtml(question.text || '')}" />
+                            <div class="builder-options">
+                              <input id="reconduct-q-${index}-opt-0" type="text" value="${escapeHtml(question.options?.[0] || '')}" />
+                              <input id="reconduct-q-${index}-opt-1" type="text" value="${escapeHtml(question.options?.[1] || '')}" />
+                              <input id="reconduct-q-${index}-opt-2" type="text" value="${escapeHtml(question.options?.[2] || '')}" />
+                              <input id="reconduct-q-${index}-opt-3" type="text" value="${escapeHtml(question.options?.[3] || '')}" />
+                            </div>
+                            <select id="reconduct-q-${index}-answer">
+                              <option value="0" ${Number(question.correctIndex) === 0 ? 'selected' : ''}>Correct Option: A</option>
+                              <option value="1" ${Number(question.correctIndex) === 1 ? 'selected' : ''}>Correct Option: B</option>
+                              <option value="2" ${Number(question.correctIndex) === 2 ? 'selected' : ''}>Correct Option: C</option>
+                              <option value="3" ${Number(question.correctIndex) === 3 ? 'selected' : ''}>Correct Option: D</option>
+                            </select>
+                          </article>
+                        `
+                      )
+                      .join('')}
+                  </div>
+                </section>
+
+                <div class="button-row">
+                  <button class="cta-main" id="publishReconductBtn">Publish Re-conduct Test</button>
+                  <button class="cta-soft" type="button" data-close-reconduct-test>Cancel</button>
+                </div>
+                <p class="auth-note" id="reconductStatus"></p>
+              </div>
+            </section>
+          `
+          : ''
+      }
     </div>
   `;
 
-  bindTabButtons('[data-teacher-tab]', (button) => {
-    state.teacherTab = button.getAttribute('data-teacher-tab') || 'dashboard';
-    void renderTeacherDashboard();
+  document.querySelectorAll('[data-teacher-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.teacherTab = button.getAttribute('data-teacher-tab') || 'dashboard';
+      closeOpenNavDropdowns();
+      void renderTeacherDashboard();
+    });
   });
+  bindNavDropdowns();
 
   document.getElementById('logoutBtn').addEventListener('click', logout);
 
-  const createSubjectBtn = document.getElementById('createSubjectBtn');
-  if (createSubjectBtn) {
-    createSubjectBtn.addEventListener('click', async () => {
-      const status = document.getElementById('createSubjectStatus');
-      const form = document.getElementById('createSubjectForm');
-      if (form && !form.reportValidity()) return;
-      status.textContent = 'Creating subject...';
-
-      await withButtonLoading(createSubjectBtn, 'Creating...', async () => {
-        try {
-          const name = sanitizeValue(document.getElementById('subjectName').value);
-          const syllabusFile = document.getElementById('syllabusPdfFile').files[0] || null;
-
-          if (name.length < 2) {
-            status.textContent = 'Subject name must be at least 2 characters.';
-            showToast(status.textContent, 'error');
-            return;
-          }
-          if (!syllabusFile || !/\.pdf$/i.test(syllabusFile.name)) {
-            status.textContent = 'Please upload syllabus as a PDF file.';
-            showToast(status.textContent, 'error');
-            return;
-          }
-
-          status.textContent = 'Uploading syllabus...';
-          const uploadedSyllabus = await uploadAsset(syllabusFile, 'syllabus');
-
-          const payload = {
-            name,
-            syllabusPdfUrl: uploadedSyllabus.url,
-            syllabusPdfName: syllabusFile.name
-          };
-
-          await api('/teacher/subjects', {
-            method: 'POST',
-            body: JSON.stringify(payload)
-          });
-
-          status.textContent = 'Subject created.';
-          showToast('Subject created successfully.', 'success');
-          void renderTeacherDashboard();
-        } catch (error) {
-          status.textContent = error.message;
-          showToast(error.message, 'error');
+  const runQaBtn = document.getElementById('runQaBtn');
+  if (runQaBtn) {
+    runQaBtn.addEventListener('click', async () => {
+      if (state.qaRunningRole === 'teacher') return;
+      state.qaRunningRole = 'teacher';
+      await withButtonLoading(runQaBtn, 'Checking...', async () => {
+        const report = await runRoleSmokeChecks('teacher');
+        state.qaReports.teacher = report;
+        if (report.failedCount > 0) {
+          showToast(`QA finished: ${report.failedCount} check(s) failed.`, 'error', 3200);
+        } else {
+          showToast('QA finished: all checks passed.', 'success', 2200);
         }
       });
+      state.qaRunningRole = '';
+      await renderTeacherDashboard();
     });
   }
-
-  let syllabusUpdateSubjectId = '';
-  const updateSyllabusFileInput = document.getElementById('updateSyllabusFileInput');
-  const updateSyllabusStatus = document.getElementById('updateSyllabusStatus');
-
-  document.querySelectorAll('[data-update-syllabus]').forEach((button) => {
-    button.addEventListener('click', () => {
-      syllabusUpdateSubjectId = button.getAttribute('data-update-syllabus') || '';
-      if (!syllabusUpdateSubjectId || !updateSyllabusFileInput) return;
-      updateSyllabusFileInput.value = '';
-      updateSyllabusFileInput.click();
-    });
-  });
-
-  if (updateSyllabusFileInput) {
-    updateSyllabusFileInput.addEventListener('change', async () => {
-      const syllabusFile = updateSyllabusFileInput.files?.[0] || null;
-      if (!syllabusUpdateSubjectId || !syllabusFile) return;
-      if (!/\.pdf$/i.test(syllabusFile.name)) {
-        if (updateSyllabusStatus) updateSyllabusStatus.textContent = 'Please upload a PDF file.';
-        showToast('Please upload a PDF file.', 'error');
-        return;
-      }
-
-      if (updateSyllabusStatus) updateSyllabusStatus.textContent = 'Uploading new syllabus...';
-
-      try {
-        const uploadedSyllabus = await uploadAsset(syllabusFile, 'syllabus');
-        await api(`/teacher/subjects/${syllabusUpdateSubjectId}/syllabus`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            syllabusPdfUrl: uploadedSyllabus.url,
-            syllabusPdfName: syllabusFile.name
-          })
-        });
-        if (updateSyllabusStatus) updateSyllabusStatus.textContent = 'Syllabus updated successfully.';
-        showToast('Syllabus updated.', 'success');
-        void renderTeacherDashboard();
-      } catch (error) {
-        if (updateSyllabusStatus) {
-          updateSyllabusStatus.textContent =
-            error.message ||
-            'Upload failed. Configure Cloudinary in production for reliable PDF uploads.';
-        }
-        showToast(error.message || 'Could not upload syllabus.', 'error');
-      }
-    });
-  }
-
-  document.querySelectorAll('[data-delete-subject]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      if (!confirm('Delete this subject?')) return;
-      const subjectId = button.getAttribute('data-delete-subject');
-      if (!subjectId) return;
-
-      await withButtonLoading(button, 'Deleting...', async () => {
-        try {
-          await api(`/teacher/subjects/${subjectId}`, { method: 'DELETE' });
-          showToast('Subject deleted.', 'success');
-          void renderTeacherDashboard();
-        } catch (error) {
-          showToast(error.message, 'error');
-        }
-      });
-    });
-  });
 
   const createStudentBtn = document.getElementById('createStudentBtn');
   if (createStudentBtn) {
@@ -2721,6 +4162,54 @@ async function renderTeacherDashboard() {
     });
   }
 
+  const mcqQuestionCount = document.getElementById('mcqQuestionCount');
+  if (mcqQuestionCount) {
+    const syncMcqCount = (value) => {
+      const normalized = getValidMcqQuestionCount(value);
+      state.teacherMcqQuestionCount = normalized == null ? '' : normalized;
+      void renderTeacherDashboard();
+    };
+    mcqQuestionCount.addEventListener('change', (event) => {
+      syncMcqCount(event.target.value);
+    });
+    mcqQuestionCount.addEventListener('input', (event) => {
+      const normalized = getValidMcqQuestionCount(event.target.value);
+      if (normalized == null && String(event.target.value || '').trim() !== '') return;
+      syncMcqCount(event.target.value);
+    });
+  }
+
+  const testDuration = document.getElementById('testDuration');
+  if (testDuration) {
+    testDuration.addEventListener('change', (event) => {
+      const parsedValue = Number(event.target.value || 0);
+      if (!Number.isFinite(parsedValue) || parsedValue <= 0) return;
+      if (state.teacherTestType === 'mcq') {
+        state.teacherMcqDurationMinutes = parsedValue;
+      } else {
+        state.teacherPdfDurationMinutes = parsedValue;
+      }
+    });
+  }
+
+  const mcqCorrectMarkInput = document.getElementById('mcqCorrectMark');
+  if (mcqCorrectMarkInput) {
+    mcqCorrectMarkInput.addEventListener('change', (event) => {
+      const value = Number(event.target.value || '');
+      if (!Number.isFinite(value) || value <= 0) return;
+      state.teacherMcqCorrectMark = value;
+    });
+  }
+
+  const mcqWrongMarkInput = document.getElementById('mcqWrongMark');
+  if (mcqWrongMarkInput) {
+    mcqWrongMarkInput.addEventListener('change', (event) => {
+      const value = Number(event.target.value || '');
+      if (!Number.isFinite(value)) return;
+      state.teacherMcqWrongMark = value;
+    });
+  }
+
   const testSubject = document.getElementById('testSubjectId');
   if (testSubject) {
     testSubject.addEventListener('change', (event) => {
@@ -2740,6 +4229,35 @@ async function renderTeacherDashboard() {
     });
   }
 
+  const testScheduleEnabled = document.getElementById('testScheduleEnabled');
+  if (testScheduleEnabled) {
+    testScheduleEnabled.addEventListener('change', (event) => {
+      state.teacherTestScheduleEnabled = Boolean(event.target.checked);
+      void renderTeacherDashboard();
+    });
+  }
+
+  const testScheduleDate = document.getElementById('testScheduleDate');
+  if (testScheduleDate) {
+    testScheduleDate.addEventListener('change', (event) => {
+      state.teacherTestScheduleDate = event.target.value || todayIsoDate();
+    });
+  }
+
+  const testScheduleStartTime = document.getElementById('testScheduleStartTime');
+  if (testScheduleStartTime) {
+    testScheduleStartTime.addEventListener('change', (event) => {
+      state.teacherTestScheduleStartTime = event.target.value || '17:00';
+    });
+  }
+
+  const testScheduleEndTime = document.getElementById('testScheduleEndTime');
+  if (testScheduleEndTime) {
+    testScheduleEndTime.addEventListener('change', (event) => {
+      state.teacherTestScheduleEndTime = event.target.value || '19:00';
+    });
+  }
+
   document.querySelectorAll('[data-test-target-student]').forEach((input) => {
     input.addEventListener('change', () => {
       state.teacherTestSelectedStudentIds = Array.from(
@@ -2753,10 +4271,10 @@ async function renderTeacherDashboard() {
   const selectAllTargetsBtn = document.getElementById('selectAllTargetsBtn');
   if (selectAllTargetsBtn) {
     selectAllTargetsBtn.addEventListener('click', () => {
-      const values = Array.from(document.querySelectorAll('[data-test-target-student]')).map((item) =>
-        item.getAttribute('data-test-target-student')
+      state.teacherTestSelectedStudentIds = checkedDataValues(
+        '[data-test-target-student]',
+        'data-test-target-student'
       );
-      state.teacherTestSelectedStudentIds = values.filter(Boolean);
       void renderTeacherDashboard();
     });
   }
@@ -2781,14 +4299,24 @@ async function renderTeacherDashboard() {
         try {
           const subjectId = document.getElementById('testSubjectId').value;
           const title = sanitizeValue(document.getElementById('testTitle').value);
-          const type = document.getElementById('testType').value;
-          const durationMinutes = Number(document.getElementById('testDuration').value || 60);
+          const selectedMode = document.getElementById('testType').value;
+          const durationMinutes = Number(
+            document.getElementById('testDuration').value ||
+              (selectedMode === 'mcq' ? state.teacherMcqDurationMinutes : state.teacherPdfDurationMinutes)
+          );
           const audienceMode = document.getElementById('testAudienceMode')?.value || 'all';
+          const scheduleEnabled = Boolean(document.getElementById('testScheduleEnabled')?.checked);
           const selectedStudentIds =
             audienceMode === 'selected'
-              ? Array.from(document.querySelectorAll('[data-test-target-student]:checked'))
-                  .map((item) => item.getAttribute('data-test-target-student'))
-                  .filter(Boolean)
+              ? Array.from(
+                  new Set([
+                    ...(state.teacherTestSelectedStudentIds || []),
+                    ...checkedDataValues(
+                      '[data-test-target-student]:checked',
+                      'data-test-target-student'
+                    )
+                  ])
+                )
               : [];
 
           if (!subjectId || !title) {
@@ -2803,29 +4331,137 @@ async function renderTeacherDashboard() {
             return;
           }
 
-          let questions = [];
-          if (type === 'mcq' || type === 'true_false') {
-            questions = collectObjectiveQuestions(type);
-          } else {
-            const rawQuestions = document.getElementById('testQuestionsInput').value;
-            questions = parseLongQuestions(rawQuestions);
+          if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
+            status.textContent = 'Please choose a valid duration.';
+            showToast(status.textContent, 'error');
+            return;
           }
+
+          let type = selectedMode;
+          let sourcePdfName = '';
+          let questions = [];
+          let scheduledStartAt = '';
+          let scheduledEndAt = '';
+          let questionPdfUrl = '';
+          let questionPdfName = '';
+          let answerKeyPdfUrl = '';
+          let answerKeyPdfName = '';
+
+          if (scheduleEnabled) {
+            const dateValue = document.getElementById('testScheduleDate')?.value || '';
+            const startTime = document.getElementById('testScheduleStartTime')?.value || '';
+            const endTime = document.getElementById('testScheduleEndTime')?.value || '';
+
+            state.teacherTestScheduleDate = dateValue || state.teacherTestScheduleDate;
+            state.teacherTestScheduleStartTime = startTime || state.teacherTestScheduleStartTime;
+            state.teacherTestScheduleEndTime = endTime || state.teacherTestScheduleEndTime;
+
+            scheduledStartAt = combineDateAndTimeToIso(dateValue, startTime);
+            scheduledEndAt = combineDateAndTimeToIso(dateValue, endTime);
+            if (!scheduledStartAt || !scheduledEndAt) {
+              status.textContent = 'Please enter valid schedule date/time.';
+              showToast(status.textContent, 'error');
+              return;
+            }
+            if (new Date(scheduledEndAt).getTime() <= new Date(scheduledStartAt).getTime()) {
+              status.textContent = 'Schedule end time must be after start time.';
+              showToast(status.textContent, 'error');
+              return;
+            }
+          }
+
+          if (selectedMode === 'mcq') {
+            const rawCount = document.getElementById('mcqQuestionCount')?.value ?? state.teacherMcqQuestionCount;
+            const questionCount = getValidMcqQuestionCount(rawCount);
+            if (questionCount == null) {
+              status.textContent = `Choose MCQ question count between ${MCQ_MIN_QUESTION_COUNT} and ${MCQ_MAX_QUESTION_COUNT}.`;
+              showToast(status.textContent, 'error');
+              return;
+            }
+            state.teacherMcqQuestionCount = questionCount;
+            state.teacherMcqDurationMinutes = durationMinutes;
+            const correctMark = Number(
+              document.getElementById('mcqCorrectMark')?.value ?? state.teacherMcqCorrectMark
+            );
+            const wrongMark = Number(
+              document.getElementById('mcqWrongMark')?.value ?? state.teacherMcqWrongMark
+            );
+            if (!Number.isFinite(correctMark) || correctMark <= 0) {
+              status.textContent = 'Right-answer mark must be greater than 0.';
+              showToast(status.textContent, 'error');
+              return;
+            }
+            if (!Number.isFinite(wrongMark) || wrongMark > 0) {
+              status.textContent = 'Wrong-answer mark must be 0 or negative.';
+              showToast(status.textContent, 'error');
+              return;
+            }
+            state.teacherMcqCorrectMark = correctMark;
+            state.teacherMcqWrongMark = wrongMark;
+            questions = collectObjectiveQuestions(questionCount);
+          } else if (selectedMode === 'pdf_upload') {
+            state.teacherPdfDurationMinutes = durationMinutes;
+            const questionPdfInput = document.getElementById('testPdfQuestionsFile');
+            const answerKeyPdfInput = document.getElementById('testPdfAnswerKeyFile');
+            const questionPdfFile = questionPdfInput?.files?.[0];
+            const answerKeyPdfFile = answerKeyPdfInput?.files?.[0];
+            if (!questionPdfFile) {
+              status.textContent = 'Please upload the Questions PDF.';
+              showToast(status.textContent, 'error');
+              return;
+            }
+            if (!answerKeyPdfFile) {
+              status.textContent = 'Please upload the Answer Key PDF.';
+              showToast(status.textContent, 'error');
+              return;
+            }
+
+            status.textContent = 'Uploading Questions PDF...';
+            const uploadedQuestionsPdf = await uploadAsset(questionPdfFile, 'tests/questions');
+            status.textContent = 'Uploading Answer Key PDF...';
+            const uploadedAnswerKeyPdf = await uploadAsset(answerKeyPdfFile, 'tests/answer-keys');
+
+            questions = await extractQuestionsFromPdf(questionPdfFile);
+            type = 'long';
+            sourcePdfName = questionPdfFile?.name || '';
+            questionPdfUrl = uploadedQuestionsPdf.url;
+            questionPdfName = questionPdfFile.name || '';
+            answerKeyPdfUrl = uploadedAnswerKeyPdf.url;
+            answerKeyPdfName = answerKeyPdfFile.name || '';
+          } else {
+            status.textContent = 'Unsupported test mode.';
+            showToast(status.textContent, 'error');
+            return;
+          }
+
+          const payload = {
+            subjectId,
+            title,
+            type,
+            durationMinutes,
+            mcqCorrectMark:
+              type === 'mcq'
+                ? Number(state.teacherMcqCorrectMark || 1)
+                : undefined,
+            mcqWrongMark:
+              type === 'mcq'
+                ? Number(state.teacherMcqWrongMark || 0)
+                : undefined,
+            audienceMode,
+            selectedStudentIds,
+            sourcePdfName,
+            questionPdfUrl,
+            questionPdfName,
+            answerKeyPdfUrl,
+            answerKeyPdfName,
+            scheduledStartAt,
+            scheduledEndAt,
+            questions
+          };
 
           await api('/teacher/tests', {
             method: 'POST',
-            body: JSON.stringify({
-              subjectId,
-              title,
-              type,
-              durationMinutes:
-                type === 'mcq' || type === 'true_false'
-                  ? MCQ_DURATION_MINUTES
-                  : durationMinutes,
-              audienceMode,
-              selectedStudentIds,
-              sourcePdfName: '',
-              questions
-            })
+            body: JSON.stringify(payload)
           });
           status.textContent = 'Test published.';
           showToast('Test published successfully.', 'success');
@@ -2837,6 +4473,244 @@ async function renderTeacherDashboard() {
       });
     });
   }
+
+  document.querySelectorAll('[data-view-test]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.teacherViewedTestId = button.getAttribute('data-view-test') || '';
+      state.teacherReconductDraft = null;
+      void renderTeacherDashboard();
+    });
+  });
+
+  document.querySelectorAll('[data-edit-reconduct-test]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const testId = button.getAttribute('data-edit-reconduct-test');
+      const sourceTest = tests.find((test) => test._id === testId);
+      if (!sourceTest) return;
+      if (sourceTest.type !== 'mcq') {
+        showToast('Edit & Re-conduct is available for MCQ tests only.', 'error');
+        return;
+      }
+      state.teacherViewedTestId = '';
+      state.teacherReconductDraft = buildReconductDraftFromTest(sourceTest);
+      void renderTeacherDashboard();
+    });
+  });
+
+  document.querySelectorAll('[data-close-view-test]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.teacherViewedTestId = '';
+      void renderTeacherDashboard();
+    });
+  });
+
+  document.querySelectorAll('[data-close-reconduct-test]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.teacherReconductDraft = null;
+      void renderTeacherDashboard();
+    });
+  });
+
+  const reconductAudienceMode = document.getElementById('reconductAudienceMode');
+  if (reconductAudienceMode && state.teacherReconductDraft) {
+    reconductAudienceMode.addEventListener('change', (event) => {
+      state.teacherReconductDraft.audienceMode = event.target.value === 'all' ? 'all' : 'selected';
+      if (state.teacherReconductDraft.audienceMode === 'all') {
+        state.teacherReconductDraft.selectedStudentIds = [];
+      }
+      void renderTeacherDashboard();
+    });
+  }
+
+  document.querySelectorAll('[data-reconduct-student]').forEach((checkbox) => {
+    checkbox.addEventListener('change', () => {
+      if (!state.teacherReconductDraft) return;
+      state.teacherReconductDraft.selectedStudentIds = Array.from(
+        document.querySelectorAll('[data-reconduct-student]:checked')
+      )
+        .map((item) => item.getAttribute('data-reconduct-student'))
+        .filter(Boolean);
+    });
+  });
+
+  const reconductSelectAllBtn = document.getElementById('reconductSelectAllBtn');
+  if (reconductSelectAllBtn && state.teacherReconductDraft) {
+    reconductSelectAllBtn.addEventListener('click', () => {
+      state.teacherReconductDraft.selectedStudentIds = reconductStudentPool
+        .map((student) => resolveEntityId(student))
+        .filter(Boolean);
+      void renderTeacherDashboard();
+    });
+  }
+
+  const reconductClearAllBtn = document.getElementById('reconductClearAllBtn');
+  if (reconductClearAllBtn && state.teacherReconductDraft) {
+    reconductClearAllBtn.addEventListener('click', () => {
+      state.teacherReconductDraft.selectedStudentIds = [];
+      void renderTeacherDashboard();
+    });
+  }
+
+  const publishReconductBtn = document.getElementById('publishReconductBtn');
+  if (publishReconductBtn && state.teacherReconductDraft) {
+    publishReconductBtn.addEventListener('click', async () => {
+      const status = document.getElementById('reconductStatus');
+      if (status) status.textContent = 'Publishing...';
+
+      await withButtonLoading(publishReconductBtn, 'Publishing...', async () => {
+        try {
+          if (!state.teacherReconductDraft) return;
+          const draft = state.teacherReconductDraft;
+          const title = sanitizeValue(document.getElementById('reconductTitle')?.value || '');
+          const durationMinutes = Number(document.getElementById('reconductDuration')?.value || 0);
+          const mcqCorrectMark = Number(document.getElementById('reconductCorrectMark')?.value || 0);
+          const mcqWrongMark = Number(document.getElementById('reconductWrongMark')?.value || 0);
+
+          if (title.length < 2) throw new Error('Test title must be at least 2 characters.');
+          if (!Number.isFinite(durationMinutes) || durationMinutes < 1 || durationMinutes > 180) {
+            throw new Error('Duration must be between 1 and 180 minutes.');
+          }
+          if (!Number.isFinite(mcqCorrectMark) || mcqCorrectMark <= 0) {
+            throw new Error('Right-answer mark must be greater than 0.');
+          }
+          if (!Number.isFinite(mcqWrongMark) || mcqWrongMark > 0) {
+            throw new Error('Wrong-answer mark must be 0 or negative.');
+          }
+
+          const audienceMode =
+            (document.getElementById('reconductAudienceMode')?.value || draft.audienceMode) === 'all'
+              ? 'all'
+              : 'selected';
+          const selectedStudentIds =
+            audienceMode === 'selected'
+              ? Array.from(
+                  new Set([
+                    ...(state.teacherReconductDraft?.selectedStudentIds || []),
+                    ...checkedDataValues(
+                      '[data-reconduct-student]:checked',
+                      'data-reconduct-student'
+                    )
+                  ])
+                )
+              : [];
+
+          if (audienceMode === 'selected' && !selectedStudentIds.length) {
+            throw new Error('Select at least one student for selected audience mode.');
+          }
+
+          const questions = collectReconductQuestionsFromDom((draft.questions || []).length);
+
+          await api('/teacher/tests', {
+            method: 'POST',
+            body: JSON.stringify({
+              subjectId: draft.subjectId,
+              title,
+              type: 'mcq',
+              durationMinutes,
+              mcqCorrectMark,
+              mcqWrongMark,
+              audienceMode,
+              selectedStudentIds,
+              questions
+            })
+          });
+
+          showToast('Edited test re-conducted successfully.', 'success');
+          state.teacherReconductDraft = null;
+          await renderTeacherDashboard();
+        } catch (error) {
+          if (status) status.textContent = error.message || 'Failed to re-conduct test.';
+          showToast(error.message || 'Failed to re-conduct test.', 'error');
+        }
+      });
+    });
+  }
+
+  document.querySelectorAll('[data-download-viewed-questions]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const testId = button.getAttribute('data-download-viewed-questions');
+      const test = tests.find((item) => item._id === testId);
+      if (!test) return;
+
+      await withButtonLoading(button, 'Preparing...', async () => {
+        try {
+          if (test.type === 'long' && test.questionPdfUrl) {
+            const link = document.createElement('a');
+            link.href = test.questionPdfUrl;
+            link.target = '_blank';
+            link.rel = 'noreferrer';
+            link.download = test.questionPdfName || `${test.title || 'test'}-questions.pdf`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            showToast('Questions PDF downloaded.', 'success');
+            return;
+          }
+
+          saveTextAsPdf(
+            `${String(test.title || 'mcq-test').replace(/\s+/g, '-').toLowerCase()}-questions.pdf`,
+            buildMcqQuestionsPdfLines(test)
+          );
+          showToast('Questions PDF downloaded.', 'success');
+        } catch (error) {
+          showToast(error.message || 'Failed to download questions PDF.', 'error');
+        }
+      });
+    });
+  });
+
+  document.querySelectorAll('[data-download-viewed-answer-key]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const testId = button.getAttribute('data-download-viewed-answer-key');
+      const test = tests.find((item) => item._id === testId);
+      if (!test) return;
+
+      await withButtonLoading(button, 'Preparing...', async () => {
+        try {
+          if (test.type === 'long' && test.answerKeyPdfUrl) {
+            const link = document.createElement('a');
+            link.href = test.answerKeyPdfUrl;
+            link.target = '_blank';
+            link.rel = 'noreferrer';
+            link.download = test.answerKeyPdfName || `${test.title || 'test'}-answer-key.pdf`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            showToast('Answer key PDF downloaded.', 'success');
+            return;
+          }
+
+          saveTextAsPdf(
+            `${String(test.title || 'mcq-test').replace(/\s+/g, '-').toLowerCase()}-answer-key.pdf`,
+            buildMcqAnswerKeyPdfLines(test)
+          );
+          showToast('Answer key PDF downloaded.', 'success');
+        } catch (error) {
+          showToast(error.message || 'Failed to download answer key PDF.', 'error');
+        }
+      });
+    });
+  });
+
+  document.querySelectorAll('[data-download-viewed-combined]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const testId = button.getAttribute('data-download-viewed-combined');
+      const test = tests.find((item) => item._id === testId);
+      if (!test) return;
+
+      await withButtonLoading(button, 'Preparing...', async () => {
+        try {
+          saveTextAsPdf(
+            `${String(test.title || 'mcq-test').replace(/\s+/g, '-').toLowerCase()}-test-pack.pdf`,
+            buildMcqCombinedPdfLines(test)
+          );
+          showToast('Combined test PDF downloaded.', 'success');
+        } catch (error) {
+          showToast(error.message || 'Failed to download combined test PDF.', 'error');
+        }
+      });
+    });
+  });
 
   const teacherAssessmentQuery = document.getElementById('teacherAssessmentQuery');
   if (teacherAssessmentQuery) {
@@ -2906,16 +4780,7 @@ async function renderTeacherDashboard() {
   });
 
   bindAccountPasswordForm();
-}
-
-function buildAnswerKeyText(payload) {
-  const lines = [`Answer Key: ${payload.title || 'Test'}`, ''];
-  (payload.answerKey || []).forEach((item) => {
-    lines.push(`${item.questionNumber}. ${item.question}`);
-    lines.push(`Correct: ${item.correctAnswer}`);
-    lines.push('');
-  });
-  return lines.join('\n');
+  endNavTransition();
 }
 
 function renderStudentAttemptResult(test, attempt, backTab) {
@@ -2944,8 +4809,8 @@ function renderStudentAttemptResult(test, attempt, backTab) {
           <p class="muted">Time spent: ${Math.round((attempt.timeSpentSeconds || 0) / 60)} minutes</p>
 
           ${
-            test.type === 'mcq' || test.type === 'true_false'
-              ? '<button class="cta-soft" id="downloadAnswerKeyBtn">Download Answer Key</button>'
+            test.type === 'mcq' || test.answerKeyPdfUrl
+              ? '<button class="cta-soft" id="viewAnswerKeyBtn">View Answer Key</button>'
               : ''
           }
         </section>
@@ -2958,17 +4823,14 @@ function renderStudentAttemptResult(test, attempt, backTab) {
     void renderStudentDashboard();
   });
 
-  const answerKeyBtn = document.getElementById('downloadAnswerKeyBtn');
+  const answerKeyBtn = document.getElementById('viewAnswerKeyBtn');
   if (answerKeyBtn) {
     answerKeyBtn.addEventListener('click', async () => {
-      await withButtonLoading(answerKeyBtn, 'Downloading...', async () => {
+      await withButtonLoading(answerKeyBtn, 'Opening...', async () => {
         try {
           const result = await api(`/student/tests/attempts/${attempt._id}/answer-key`);
-          downloadTextFile(
-            `${(test.title || 'test').replace(/\s+/g, '-').toLowerCase()}-answer-key.txt`,
-            buildAnswerKeyText(result.data)
-          );
-          showToast('Answer key downloaded.', 'success');
+          openStudentAnswerKeyViewer(result.data, `${test.title || 'Test'} - Answer Key`);
+          showToast('Answer key opened.', 'success');
         } catch (error) {
           showToast(error.message, 'error');
         }
@@ -2986,7 +4848,7 @@ function renderStudentTestAttempt(test, backTab) {
 
   const questionMarkup = (test.questions || [])
     .map((question, index) => {
-      if (test.type === 'mcq' || test.type === 'true_false') {
+      if (test.type === 'mcq') {
         const options = (question.options || [])
           .map(
             (option, optionIndex) => `
@@ -3029,7 +4891,26 @@ function renderStudentTestAttempt(test, backTab) {
         <section class="panel">
           <h2>${escapeHtml(test.title)}</h2>
           <p class="subline">${escapeHtml(test.subjectName || '')} | ${escapeHtml(test.durationMinutes)} minutes</p>
+          ${
+            test.scheduledStartAt && test.scheduledEndAt
+              ? `<p class="muted">Allowed window: ${escapeHtml(formatTestWindow(test))}</p>`
+              : ''
+          }
         </section>
+
+        ${
+          test.questionPdfUrl
+            ? `
+              <section class="panel">
+                <div class="progress-row">
+                  <h3>Question Paper (Original PDF)</h3>
+                  <a href="${escapeHtml(test.questionPdfUrl)}" target="_blank" rel="noreferrer">Open in new tab</a>
+                </div>
+                <iframe class="pdf-viewer resource-pdf-viewer" src="${escapeHtml(test.questionPdfUrl)}" title="Question PDF"></iframe>
+              </section>
+            `
+            : ''
+        }
 
         <section class="panel">
           <div class="mcq-list">${questionMarkup}</div>
@@ -3060,7 +4941,7 @@ function renderStudentTestAttempt(test, backTab) {
     runtime.attemptSubmitting = true;
 
     const answers = (test.questions || []).map((_, index) => {
-      if (test.type === 'mcq' || test.type === 'true_false') {
+      if (test.type === 'mcq') {
         const checked = document.querySelector(`input[name=\"q-${index}\"]:checked`);
         return checked ? Number(checked.value) : null;
       }
@@ -3095,6 +4976,124 @@ function renderStudentTestAttempt(test, backTab) {
   runtime.attemptTimerId = setInterval(updateTimer, 1000);
 }
 
+function isStudentPdfResource(resource) {
+  const type = String(resource?.resourceType || '').toLowerCase();
+  if (type === 'pdf' || type === 'ebook') return true;
+  const value = String(resource?.value || '').trim().toLowerCase();
+  return value.endsWith('.pdf') || value.includes('.pdf?');
+}
+
+function buildStudentPdfViewerSrc(rawUrl) {
+  const value = String(rawUrl || '').trim();
+  if (!value) return '';
+  const hashParams = 'toolbar=0&navpanes=0&scrollbar=0&view=FitH';
+  return value.includes('#') ? `${value}&${hashParams}` : `${value}#${hashParams}`;
+}
+
+function answerKeyViewerMarkup(payload, title = 'Answer Key') {
+  if (!payload) return '';
+  const safeTitle = escapeHtml(title);
+  const downloadUrl = String(payload.downloadUrl || '').trim();
+
+  if (downloadUrl) {
+    return `
+      <div class="test-modal-backdrop" data-close-student-answer-key></div>
+      <section class="test-modal" role="dialog" aria-modal="true" aria-label="Answer Key Viewer">
+        <div class="test-modal-card">
+          <div class="progress-row">
+            <h3>${safeTitle}</h3>
+            <button class="mini-btn" type="button" data-close-student-answer-key>Close</button>
+          </div>
+          <p class="muted">View-only mode. Download is disabled in this interface.</p>
+          <iframe
+            class="pdf-viewer resource-pdf-viewer"
+            src="${escapeHtml(buildStudentPdfViewerSrc(downloadUrl))}"
+            title="Answer Key PDF Viewer"
+          ></iframe>
+        </div>
+      </section>
+    `;
+  }
+
+  const rows = Array.isArray(payload.answerKey) ? payload.answerKey : [];
+  return `
+    <div class="test-modal-backdrop" data-close-student-answer-key></div>
+    <section class="test-modal" role="dialog" aria-modal="true" aria-label="Answer Key Viewer">
+      <div class="test-modal-card">
+        <div class="progress-row">
+          <h3>${safeTitle}</h3>
+          <button class="mini-btn" type="button" data-close-student-answer-key>Close</button>
+        </div>
+        <p class="muted">View-only mode. Download is disabled in this interface.</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Question</th>
+                <th>Correct Answer</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${
+                rows.length
+                  ? rows
+                      .map(
+                        (item) => `
+                          <tr>
+                            <td>${escapeHtml(item.questionNumber ?? '-')}</td>
+                            <td>${escapeHtml(item.question || '-')}</td>
+                            <td>${escapeHtml(item.correctAnswer || '-')}</td>
+                          </tr>
+                        `
+                      )
+                      .join('')
+                  : '<tr><td colspan="3">Answer key is not available.</td></tr>'
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function bindStudentAnswerKeyViewerEvents() {
+  document.querySelectorAll('[data-close-student-answer-key]').forEach((button) => {
+    button.addEventListener('click', () => {
+      document.querySelectorAll('[data-student-answer-key-root]').forEach((node) => node.remove());
+    });
+  });
+}
+
+function openStudentAnswerKeyViewer(payload, title = 'Answer Key') {
+  document.querySelectorAll('[data-student-answer-key-root]').forEach((node) => node.remove());
+  const wrapper = document.createElement('div');
+  wrapper.setAttribute('data-student-answer-key-root', '1');
+  wrapper.innerHTML = answerKeyViewerMarkup(payload, title);
+  document.body.appendChild(wrapper);
+  bindStudentAnswerKeyViewerEvents();
+}
+
+function studentResourceActionMarkup(resource) {
+  if (!resource || !resource.value) return '<span class="muted">No file</span>';
+  if (isStudentPdfResource(resource)) {
+    return `
+      <button
+        type="button"
+        class="mini-btn"
+        data-open-student-pdf="1"
+        data-pdf-url="${escapeHtml(resource.value)}"
+        data-pdf-title="${escapeHtml(resource.title || 'PDF Resource')}"
+      >
+        View in PDF Viewer
+      </button>
+    `;
+  }
+
+  return `<a href="${escapeHtml(resource.value)}" target="_blank" rel="noreferrer">Open Resource</a>`;
+}
+
 function resourcesGroupedMarkup(resources) {
   const groups = {
     pdf: [],
@@ -3124,11 +5123,7 @@ function resourcesGroupedMarkup(resources) {
                       <div class="resource-body">
                         <p><strong>${escapeHtml(item.title)}</strong></p>
                         <p class="muted">${escapeHtml(item.subjectName || '')} | ${escapeHtml(item.teacherName || '')}</p>
-                        ${
-                          item.source === 'file'
-                            ? `<a href="${escapeHtml(item.value)}" download="${escapeHtml(item.title || 'resource')}">Download Resource</a>`
-                            : `<a href="${escapeHtml(item.value)}" target="_blank" rel="noreferrer">Open Resource</a>`
-                        }
+                        ${studentResourceActionMarkup(item)}
                       </div>
                     </article>
                   `
@@ -3151,17 +5146,30 @@ function levelProgressPercent(xp = 0) {
 
 async function renderStudentDashboard() {
   clearAttemptTimer();
+  beginNavTransition();
 
-  const [meData, dashboardResult, historyResult, queueResult, todayClassesResult] =
-    await Promise.all([
-      fetchMe(),
-      api('/student/dashboard'),
-      api('/student/tests/history'),
-      api('/student/tests/queue'),
-      api('/student/classes/today')
-    ]);
+  const user = state.session?.user || { fullName: '', username: '' };
+  const institutionId = state.session?.institutionId || '';
 
-  const user = meData.user;
+  const shouldLoadDashboard = state.studentTab === 'dashboard' || state.studentTab === 'resources' || state.studentTab === 'syllabus';
+  const shouldLoadHistory = state.studentTab === 'history';
+  const shouldLoadQueue =
+    state.studentTab === 'dashboard' ||
+    state.studentTab === 'today' ||
+    state.studentTab === 'pending';
+  const shouldLoadTodayClasses = state.studentTab === 'dashboard' || state.studentTab === 'classes';
+
+  const [dashboardResult, historyResult, queueResult, todayClassesResult] = await Promise.all([
+    shouldLoadDashboard ? api('/student/dashboard') : Promise.resolve({ data: { dashboard: { subjects: [], streakDays: 0, level: 1, xp: 0, badges: [] } } }),
+    shouldLoadHistory ? api('/student/tests/history') : Promise.resolve({ data: { history: [] } }),
+    shouldLoadQueue ? api('/student/tests/queue') : Promise.resolve({ data: { today: [], pending: [] } }),
+    shouldLoadTodayClasses ? api('/student/classes/today') : Promise.resolve({ data: { classes: [] } })
+  ]);
+
+  schedulePrefetch(
+    ['/student/dashboard', '/student/tests/queue', '/student/resources', '/student/syllabus', '/student/classes/today', '/student/tests/history'],
+    'student-core'
+  );
   const dashboard = dashboardResult.data.dashboard;
   const history = historyResult.data.history || [];
   const todayTests = queueResult.data.today || [];
@@ -3212,28 +5220,17 @@ async function renderStudentDashboard() {
       <header class="main-nav">
         <div class="left-nav">
           ${logoMarkup(true)}
-          ${navButtonsMarkup(
-            [
-              { value: 'dashboard', label: 'Dashboard' },
-              { value: 'today', label: "Today's Test" },
-              { value: 'pending', label: 'Pending Tests' },
-              { value: 'classes', label: "Today's Classes" },
-              { value: 'resources', label: 'Resources' },
-              { value: 'syllabus', label: 'Syllabus' },
-              { value: 'history', label: 'Test History' },
-              { value: 'planner', label: 'Study To-Do' },
-              { value: 'accounts', label: 'Accounts' }
-            ],
-            state.studentTab,
-            'data-student-tab'
-          )}
+          ${studentNavMarkup(state.studentTab)}
         </div>
-        <button class="signout" id="logoutBtn">Sign Out</button>
+        <div class="top-actions">
+          <button class="signout" id="logoutBtn">Sign Out</button>
+        </div>
       </header>
 
       <main class="page container-xl">
         <h2>Good Day, ${escapeHtml(user.fullName)} 👋</h2>
-        <p class="subline">Institution ID: ${escapeHtml(meData.institution?.institutionId || state.session.institutionId)}</p>
+        <p class="subline">Institution ID: ${escapeHtml(institutionId)}</p>
+        ${smokeReportMarkup(state.qaReports.student)}
 
         ${
           state.studentTab === 'dashboard'
@@ -3251,6 +5248,11 @@ async function renderStudentDashboard() {
                   <h3>Today's Test</h3>
                   <p class="headline">${todayTests.length ? escapeHtml(todayTests[0].title) : 'No test published yet'}</p>
                   <p class="muted">${todayTests.length ? `${escapeHtml(formatTestType(todayTests[0].type))} | ${escapeHtml(todayTests[0].durationMinutes)} min` : 'Please check later.'}</p>
+                  ${
+                    todayTests.length && (todayTests[0].scheduledStartAt || todayTests[0].scheduledEndAt)
+                      ? `<p class="muted">Window: ${escapeHtml(formatTestWindow(todayTests[0]))}</p>`
+                      : ''
+                  }
                   <button class="cta-main" data-student-nav="today">Open Today's Tests</button>
                 </article>
 
@@ -3265,7 +5267,7 @@ async function renderStudentDashboard() {
               <section class="panel student-actions-panel">
                 <h3>Quick Actions</h3>
                 <div class="student-actions-grid">
-                  <button class="cta-soft action-btn" data-student-nav="resources">Download Resources</button>
+                  <button class="cta-soft action-btn" data-student-nav="resources">View Resources</button>
                   <button class="cta-soft action-btn" data-student-nav="syllabus">View Syllabus</button>
                   <button class="cta-soft action-btn" data-student-nav="history">View Scores</button>
                   <button class="cta-soft action-btn" data-student-nav="planner">Open Study To-Do</button>
@@ -3309,8 +5311,22 @@ async function renderStudentDashboard() {
                               <div>
                                 <p><strong>${escapeHtml(test.title)}</strong></p>
                                 <p class="muted">${escapeHtml(test.subjectName || '')} | ${escapeHtml(formatTestType(test.type))} | ${escapeHtml(test.durationMinutes)} min</p>
+                                <p class="muted">
+                                  ${
+                                    test.scheduledStartAt && test.scheduledEndAt
+                                      ? `Window: ${escapeHtml(formatTestWindow(test))}`
+                                      : 'Window: Always available'
+                                  }
+                                </p>
+                                ${
+                                  test.windowStatus === 'upcoming'
+                                    ? `<p class="muted">Starts at ${escapeHtml(formatDate(test.scheduledStartAt))}</p>`
+                                    : ''
+                                }
                               </div>
-                              <button class="cta-main" data-start-test="${test._id}" data-test-source="today">Start Test</button>
+                              <button class="cta-main" data-start-test="${test._id}" data-test-source="today" ${
+                                test.canStart === false ? 'disabled' : ''
+                              }>${test.canStart === false ? 'Not Open Yet' : 'Start Test'}</button>
                             </article>
                           `
                         )
@@ -3336,8 +5352,22 @@ async function renderStudentDashboard() {
                               <div>
                                 <p><strong>${escapeHtml(test.title)}</strong></p>
                                 <p class="muted">${escapeHtml(test.subjectName || '')} | ${escapeHtml(formatTestType(test.type))} | ${escapeHtml(test.durationMinutes)} min</p>
+                                <p class="muted">
+                                  ${
+                                    test.scheduledStartAt && test.scheduledEndAt
+                                      ? `Window: ${escapeHtml(formatTestWindow(test))}`
+                                      : 'Window: Always available'
+                                  }
+                                </p>
+                                ${
+                                  test.windowStatus === 'closed'
+                                    ? '<p class="muted">Window closed for this scheduled test.</p>'
+                                    : ''
+                                }
                               </div>
-                              <button class="cta-main" data-start-test="${test._id}" data-test-source="pending">Start Test</button>
+                              <button class="cta-main" data-start-test="${test._id}" data-test-source="pending" ${
+                                test.canStart === false ? 'disabled' : ''
+                              }>${test.canStart === false ? 'Window Closed' : 'Start Test'}</button>
                             </article>
                           `
                         )
@@ -3366,9 +5396,7 @@ async function renderStudentDashboard() {
                               ${item.description ? `<p>${escapeHtml(item.description)}</p>` : ''}
                               ${
                                 item.resource
-                                  ? item.resource.source === 'file'
-                                    ? `<a href="${escapeHtml(item.resource.value)}" download="${escapeHtml(item.resource.title || 'resource')}">Download Class Resource</a>`
-                                    : `<a href="${escapeHtml(item.resource.value)}" target="_blank" rel="noreferrer">Open Class Resource</a>`
+                                  ? studentResourceActionMarkup(item.resource)
                                   : ''
                               }
                             </article>
@@ -3511,7 +5539,7 @@ async function renderStudentDashboard() {
                                     <td>${item.scorePercent == null ? '-' : `${escapeHtml(item.scorePercent)}%`}</td>
                                     <td>
                                       ${
-                                        item.type === 'mcq' || item.type === 'true_false'
+                                        item.answerKeyAvailable
                                           ? `<button class="mini-btn" data-answer-key-attempt="${item._id}" data-answer-key-title="${escapeHtml(
                                               item.test?.title || 'test'
                                             )}">Answer Key</button>`
@@ -3615,14 +5643,41 @@ async function renderStudentDashboard() {
         }
 
         ${state.studentTab === 'accounts' ? accountSectionMarkup(user) : ''}
+        <button class="cta-soft mini-qa-btn floating-qa-btn" id="runQaBtn">Run QA Check</button>
       </main>
+
+      ${
+        state.studentPdfViewer
+          ? `
+            <div class="test-modal-backdrop" data-close-student-pdf></div>
+            <section class="test-modal" role="dialog" aria-modal="true" aria-label="Student PDF Viewer">
+              <div class="test-modal-card">
+                <div class="progress-row">
+                  <h3>${escapeHtml(state.studentPdfViewer.title || 'PDF Viewer')}</h3>
+                  <button class="mini-btn" type="button" data-close-student-pdf>Close</button>
+                </div>
+                <p class="muted">Protected view mode enabled. Download is disabled in this interface.</p>
+                <iframe
+                  class="pdf-viewer resource-pdf-viewer"
+                  src="${escapeHtml(buildStudentPdfViewerSrc(state.studentPdfViewer.url))}"
+                  title="Student PDF Viewer"
+                ></iframe>
+              </div>
+            </section>
+          `
+          : ''
+      }
     </div>
   `;
 
-  bindTabButtons('[data-student-tab]', (button) => {
-    state.studentTab = button.getAttribute('data-student-tab') || 'dashboard';
-    void renderStudentDashboard();
+  document.querySelectorAll('[data-student-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.studentTab = button.getAttribute('data-student-tab') || 'dashboard';
+      closeOpenNavDropdowns();
+      void renderStudentDashboard();
+    });
   });
+  bindNavDropdowns();
 
   document.querySelectorAll('[data-student-nav]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -3633,12 +5688,41 @@ async function renderStudentDashboard() {
 
   document.getElementById('logoutBtn').addEventListener('click', logout);
 
+  const runQaBtn = document.getElementById('runQaBtn');
+  if (runQaBtn) {
+    runQaBtn.addEventListener('click', async () => {
+      if (state.qaRunningRole === 'student') return;
+      state.qaRunningRole = 'student';
+      await withButtonLoading(runQaBtn, 'Checking...', async () => {
+        const report = await runRoleSmokeChecks('student');
+        state.qaReports.student = report;
+        if (report.failedCount > 0) {
+          showToast(`QA finished: ${report.failedCount} check(s) failed.`, 'error', 3200);
+        } else {
+          showToast('QA finished: all checks passed.', 'success', 2200);
+        }
+      });
+      state.qaRunningRole = '';
+      await renderStudentDashboard();
+    });
+  }
+
   document.querySelectorAll('[data-start-test]').forEach((button) => {
     button.addEventListener('click', () => {
       const testId = button.getAttribute('data-start-test');
       const source = button.getAttribute('data-test-source') || 'today';
       const test = testMap.get(testId);
       if (!test) return;
+      if (test.canStart === false) {
+        if (test.windowStatus === 'upcoming') {
+          showToast(`This test opens at ${formatDate(test.scheduledStartAt)}.`, 'error');
+        } else if (test.windowStatus === 'closed') {
+          showToast('This test window is closed.', 'error');
+        } else {
+          showToast('This test is not available right now.', 'error');
+        }
+        return;
+      }
       renderStudentTestAttempt(test, source === 'pending' ? 'pending' : 'today');
     });
   });
@@ -3677,6 +5761,26 @@ async function renderStudentDashboard() {
       void renderStudentDashboard();
     });
   }
+
+  document.querySelectorAll('[data-open-student-pdf]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const url = String(button.getAttribute('data-pdf-url') || '').trim();
+      const title = String(button.getAttribute('data-pdf-title') || 'PDF Viewer').trim();
+      if (!url) {
+        showToast('PDF URL is missing.', 'error');
+        return;
+      }
+      state.studentPdfViewer = { url, title };
+      void renderStudentDashboard();
+    });
+  });
+
+  document.querySelectorAll('[data-close-student-pdf]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.studentPdfViewer = null;
+      void renderStudentDashboard();
+    });
+  });
 
   const studentAddTodoBtn = document.getElementById('studentAddTodoBtn');
   if (studentAddTodoBtn) {
@@ -3750,14 +5854,11 @@ async function renderStudentDashboard() {
       const title = button.getAttribute('data-answer-key-title') || 'test';
       if (!attemptId) return;
 
-      await withButtonLoading(button, 'Downloading...', async () => {
+      await withButtonLoading(button, 'Opening...', async () => {
         try {
           const result = await api(`/student/tests/attempts/${attemptId}/answer-key`);
-          downloadTextFile(
-            `${String(title).replace(/\s+/g, '-').toLowerCase()}-answer-key.txt`,
-            buildAnswerKeyText(result.data)
-          );
-          showToast('Answer key downloaded.', 'success');
+          openStudentAnswerKeyViewer(result.data, `${String(title)} - Answer Key`);
+          showToast('Answer key opened.', 'success');
         } catch (error) {
           showToast(error.message, 'error');
         }
@@ -3766,6 +5867,7 @@ async function renderStudentDashboard() {
   });
 
   bindAccountPasswordForm();
+  endNavTransition();
 }
 
 async function renderByRole() {

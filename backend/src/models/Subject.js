@@ -7,8 +7,9 @@ const subjectSchema = new mongoose.Schema(
       ref: 'Institution',
       required: true
     },
-    teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     name: { type: String, required: true, trim: true },
+    courseDuration: { type: String, default: '' },
     syllabusPdfUrl: { type: String, default: '' },
     syllabusPdfName: { type: String, default: '' }
   },

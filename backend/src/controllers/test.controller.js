@@ -11,14 +11,22 @@ import { notifyUsers } from '../utils/notify.js';
 const createTestSchema = z.object({
   subjectId: z.string().min(1),
   title: z.string().trim().min(2, 'Test title must be at least 2 characters.'),
-  type: z.enum(['mcq', 'long', 'true_false', 'short']),
+  type: z.enum(['mcq', 'long']),
   audienceMode: z.enum(['all', 'selected']).optional(),
   selectedStudentIds: z.array(z.string().min(1)).optional(),
   sourcePdfName: z.string().trim().max(180).optional().or(z.literal('')),
+  questionPdfUrl: z.string().trim().optional().or(z.literal('')),
+  questionPdfName: z.string().trim().max(180).optional().or(z.literal('')),
+  answerKeyPdfUrl: z.string().trim().optional().or(z.literal('')),
+  answerKeyPdfName: z.string().trim().max(180).optional().or(z.literal('')),
+  mcqCorrectMark: z.number().min(0.01).max(100).optional(),
+  mcqWrongMark: z.number().min(-100).max(0).optional(),
   durationMinutes: z.number().int().min(1).max(180).optional(),
+  scheduledStartAt: z.string().trim().optional().or(z.literal('')),
+  scheduledEndAt: z.string().trim().optional().or(z.literal('')),
   questions: z.array(
     z.object({
-      text: z.string().min(2),
+      text: z.string().min(1),
       options: z.array(z.string()).optional(),
       correctIndex: z.number().int().optional()
     })
@@ -40,59 +48,41 @@ function normalizeMcqQuestions(rawQuestions) {
     if (!Array.isArray(question.options) || question.options.length < 2) {
       throw new Error(`Question ${index + 1}: MCQ options must have at least 2 choices.`);
     }
+    const safeText = String(question.text || '').trim();
+    if (!safeText) {
+      throw new Error(`Question ${index + 1}: question text is required.`);
+    }
+    const safeOptions = question.options.map((option) => String(option || '').trim());
+    if (safeOptions.some((option) => !option)) {
+      throw new Error(`Question ${index + 1}: all options are required.`);
+    }
 
     if (
       typeof question.correctIndex !== 'number' ||
       question.correctIndex < 0 ||
-      question.correctIndex >= question.options.length
+      question.correctIndex >= safeOptions.length
     ) {
       throw new Error(`Question ${index + 1}: correctIndex is invalid.`);
     }
 
     return {
-      text: question.text,
-      options: question.options,
+      text: safeText,
+      options: safeOptions,
       correctIndex: question.correctIndex
     };
   });
 }
 
 function normalizeLongQuestions(rawQuestions) {
-  return rawQuestions.map((question) => ({
-    text: question.text,
-    options: [],
-    correctIndex: undefined
-  }));
-}
-
-function normalizeTrueFalseQuestions(rawQuestions) {
   return rawQuestions.map((question, index) => {
-    const raw = question.correctIndex;
-    const parsedIndex =
-      typeof raw === 'number'
-        ? raw
-        : String(raw || '')
-            .trim()
-            .toLowerCase()
-            .startsWith('t')
-          ? 0
-          : String(raw || '')
-              .trim()
-              .toLowerCase()
-              .startsWith('f')
-            ? 1
-            : Number.NaN;
-
-    if (!Number.isInteger(parsedIndex) || (parsedIndex !== 0 && parsedIndex !== 1)) {
-      throw new Error(
-        `Question ${index + 1}: correct answer must be True or False (use 1/2 or true/false).`
-      );
+    const safeText = String(question.text || '').trim();
+    if (!safeText) {
+      throw new Error(`Question ${index + 1}: question text is required.`);
     }
-
     return {
-      text: question.text,
-      options: ['True', 'False'],
-      correctIndex: parsedIndex
+      text: safeText,
+      options: [],
+      correctIndex: undefined
     };
   });
 }
@@ -110,21 +100,32 @@ export async function teacherCreateTest(req, res) {
   );
   const subject = await Subject.findOne({
     _id: payload.subjectId,
-    institutionId: req.auth.institutionId,
-    teacherId: req.auth.userId
+    institutionId: req.auth.institutionId
   }).lean();
   if (!subject) return notFound(res, 'Subject not found.');
 
-  if ((payload.type === 'mcq' || payload.type === 'true_false') && payload.questions.length !== 20) {
-    return badRequest(res, 'MCQ and True/False tests must have exactly 20 questions.');
+  if (payload.type === 'mcq' && (payload.questions.length < 1 || payload.questions.length > 100)) {
+    return badRequest(res, 'MCQ tests must have between 1 and 100 questions.');
+  }
+
+  const questionPdfUrl = String(payload.questionPdfUrl || '').trim();
+  const questionPdfName = String(payload.questionPdfName || '').trim();
+  const answerKeyPdfUrl = String(payload.answerKeyPdfUrl || '').trim();
+  const answerKeyPdfName = String(payload.answerKeyPdfName || '').trim();
+  const isPdfAuthoredTest = Boolean(String(payload.sourcePdfName || '').trim() || questionPdfUrl);
+  if (isPdfAuthoredTest || payload.type === 'long') {
+    if (!questionPdfUrl) {
+      return badRequest(res, 'Questions PDF is required for PDF-based tests.');
+    }
+    if (!answerKeyPdfUrl) {
+      return badRequest(res, 'Answer Key PDF is required for PDF-based tests.');
+    }
   }
 
   let questions;
   try {
     if (payload.type === 'mcq') {
       questions = normalizeMcqQuestions(payload.questions);
-    } else if (payload.type === 'true_false') {
-      questions = normalizeTrueFalseQuestions(payload.questions);
     } else {
       questions = normalizeLongQuestions(payload.questions);
     }
@@ -133,9 +134,53 @@ export async function teacherCreateTest(req, res) {
   }
 
   const durationMinutes =
-    payload.type === 'mcq' || payload.type === 'true_false'
-      ? 5
-      : Number(payload.durationMinutes || (payload.type === 'short' ? 30 : 60));
+    payload.type === 'mcq'
+      ? Number(payload.durationMinutes || 5)
+      : Number(payload.durationMinutes || 60);
+  const mcqCorrectMark = payload.type === 'mcq' ? Number(payload.mcqCorrectMark ?? 1) : 1;
+  const mcqWrongMark = payload.type === 'mcq' ? Number(payload.mcqWrongMark ?? 0) : 0;
+
+  if (!Number.isFinite(mcqCorrectMark) || mcqCorrectMark <= 0) {
+    return badRequest(res, 'MCQ correct-answer mark must be greater than 0.');
+  }
+  if (!Number.isFinite(mcqWrongMark) || mcqWrongMark > 0) {
+    return badRequest(res, 'MCQ wrong-answer mark must be 0 or negative.');
+  }
+
+  const scheduleStartRaw = String(payload.scheduledStartAt || '').trim();
+  const scheduleEndRaw = String(payload.scheduledEndAt || '').trim();
+  let scheduledStartAt = null;
+  let scheduledEndAt = null;
+
+  if ((scheduleStartRaw && !scheduleEndRaw) || (!scheduleStartRaw && scheduleEndRaw)) {
+    return badRequest(res, 'Provide both schedule start and end time.');
+  }
+
+  if (scheduleStartRaw && scheduleEndRaw) {
+    const parsedStart = new Date(scheduleStartRaw);
+    const parsedEnd = new Date(scheduleEndRaw);
+    const startMs = parsedStart.getTime();
+    const endMs = parsedEnd.getTime();
+
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+      return badRequest(res, 'Invalid scheduled test date/time.');
+    }
+
+    if (endMs <= startMs) {
+      return badRequest(res, 'Scheduled end time must be after start time.');
+    }
+
+    const availableWindowMinutes = Math.floor((endMs - startMs) / 60_000);
+    if (availableWindowMinutes < durationMinutes) {
+      return badRequest(
+        res,
+        `Schedule window must be at least ${durationMinutes} minutes for this test.`
+      );
+    }
+
+    scheduledStartAt = parsedStart;
+    scheduledEndAt = parsedEnd;
+  }
 
   const profiles = await StudentProfile.find({
     teacherId: req.auth.userId,
@@ -173,9 +218,17 @@ export async function teacherCreateTest(req, res) {
     title: payload.title,
     type: payload.type,
     durationMinutes,
+    scheduledStartAt,
+    scheduledEndAt,
     audienceMode,
     assignedStudentIds,
     sourcePdfName: payload.sourcePdfName || '',
+    questionPdfUrl,
+    questionPdfName: questionPdfName || payload.sourcePdfName || '',
+    answerKeyPdfUrl,
+    answerKeyPdfName,
+    mcqCorrectMark,
+    mcqWrongMark,
     questions
   });
 
@@ -326,6 +379,137 @@ export async function teacherListAssessments(req, res) {
   return ok(res, { assessments });
 }
 
+export async function teacherLiveTestsStats(req, res) {
+  const now = new Date();
+  const nowMs = now.getTime();
+
+  const liveTests = await Test.find({
+    institutionId: req.auth.institutionId,
+    teacherId: req.auth.userId,
+    scheduledStartAt: { $ne: null, $lte: now },
+    scheduledEndAt: { $ne: null, $gte: now }
+  })
+    .sort({ scheduledStartAt: 1 })
+    .lean();
+
+  if (!liveTests.length) return ok(res, { liveTests: [] });
+
+  const subjectIds = Array.from(
+    new Set(
+      liveTests
+        .map((item) => item.subjectId?.toString())
+        .filter(Boolean)
+    )
+  );
+  const subjectDocs = await Subject.find({ _id: { $in: subjectIds } }).select('name').lean();
+  const subjectMap = new Map(subjectDocs.map((item) => [item._id.toString(), item.name]));
+
+  const profileDocs = await StudentProfile.find({
+    teacherId: req.auth.userId,
+    subjects: { $in: subjectIds }
+  })
+    .select('userId subjects')
+    .lean();
+
+  const profileBySubject = new Map();
+  profileDocs.forEach((profile) => {
+    const userId = profile.userId?.toString();
+    if (!userId) return;
+    (profile.subjects || []).forEach((subjectId) => {
+      const key = subjectId?.toString();
+      if (!key) return;
+      if (!profileBySubject.has(key)) profileBySubject.set(key, new Set());
+      profileBySubject.get(key).add(userId);
+    });
+  });
+
+  const assignedByTest = new Map();
+  liveTests.forEach((test) => {
+    const selected = (test.assignedStudentIds || []).map((item) => item?.toString()).filter(Boolean);
+    const assigned =
+      test.audienceMode === 'selected' && selected.length
+        ? selected
+        : Array.from(profileBySubject.get(test.subjectId?.toString()) || []);
+    assignedByTest.set(test._id.toString(), assigned);
+  });
+
+  const allStudentIds = Array.from(
+    new Set(
+      [...assignedByTest.values()].flat().filter(Boolean)
+    )
+  );
+  const studentDocs = await User.find({
+    _id: { $in: allStudentIds },
+    institutionId: req.auth.institutionId,
+    role: 'student'
+  })
+    .select('fullName username')
+    .lean();
+  const studentMap = new Map(studentDocs.map((item) => [item._id.toString(), item]));
+
+  const attempts = await Attempt.find({
+    institutionId: req.auth.institutionId,
+    teacherId: req.auth.userId,
+    testId: { $in: liveTests.map((item) => item._id) }
+  })
+    .select('testId studentId createdAt scorePercent')
+    .lean();
+
+  const attemptByTestStudent = new Map();
+  attempts.forEach((attempt) => {
+    const key = `${attempt.testId?.toString()}:${attempt.studentId?.toString()}`;
+    if (!attemptByTestStudent.has(key)) {
+      attemptByTestStudent.set(key, attempt);
+      return;
+    }
+    const existing = attemptByTestStudent.get(key);
+    if (new Date(attempt.createdAt).getTime() > new Date(existing.createdAt).getTime()) {
+      attemptByTestStudent.set(key, attempt);
+    }
+  });
+
+  const response = liveTests.map((test) => {
+    const testId = test._id.toString();
+    const assignedStudents = assignedByTest.get(testId) || [];
+    const rows = assignedStudents.map((studentId) => {
+      const student = studentMap.get(studentId);
+      const attempt = attemptByTestStudent.get(`${testId}:${studentId}`);
+      return {
+        studentId,
+        fullName: student?.fullName || 'Unknown Student',
+        username: student?.username || '',
+        attended: Boolean(attempt),
+        submittedAt: attempt?.createdAt || null,
+        scorePercent: attempt?.scorePercent ?? null
+      };
+    });
+
+    const attendedCount = rows.filter((item) => item.attended).length;
+    const pendingCount = rows.length - attendedCount;
+    const endAtMs = test.scheduledEndAt ? new Date(test.scheduledEndAt).getTime() : nowMs;
+    const remainingMinutes = Math.max(0, Math.ceil((endAtMs - nowMs) / 60000));
+
+    return {
+      id: test._id,
+      title: test.title,
+      type: test.type,
+      subjectId: test.subjectId,
+      subjectName: subjectMap.get(test.subjectId?.toString()) || '',
+      scheduledStartAt: test.scheduledStartAt,
+      scheduledEndAt: test.scheduledEndAt,
+      durationMinutes: test.durationMinutes,
+      audienceMode: test.audienceMode || 'all',
+      totalAssigned: rows.length,
+      attendedCount,
+      pendingCount,
+      remainingMinutes,
+      students: rows
+    };
+  });
+
+  return ok(res, { liveTests: response });
+}
+
 export async function teacherGradeAttempt(req, res) {
   const parsed = gradeAttemptSchema.safeParse(req.body || {});
   if (!parsed.success) {
@@ -339,8 +523,8 @@ export async function teacherGradeAttempt(req, res) {
   });
   if (!attempt) return notFound(res, 'Attempt not found.');
 
-  if (attempt.type !== 'short' && attempt.type !== 'long') {
-    return badRequest(res, 'Only short-form and long-form attempts can be graded here.');
+  if (attempt.type !== 'long') {
+    return badRequest(res, 'Only PDF-upload test attempts can be graded here.');
   }
 
   attempt.assignedMarks = parsed.data.marks;
@@ -359,7 +543,7 @@ export async function teacherGradeAttempt(req, res) {
     institutionId: req.auth.institutionId,
     recipientUserIds: [attempt.studentId],
     type: 'assessment',
-    message: `Your ${attempt.type.toUpperCase()} test "${test?.title || 'Test'}" was graded: ${parsed.data.marks}%`
+    message: `Your ${attempt.type === 'mcq' ? 'MCQ' : 'PDF Upload'} test "${test?.title || 'Test'}" was graded: ${parsed.data.marks}%`
   });
 
   await trackAnalyticsEvent({
@@ -436,6 +620,26 @@ export async function studentTestsQueue(req, res) {
   tests.forEach((test) => {
     if (attemptedIds.has(test._id.toString())) return;
     const createdAt = new Date(test.createdAt).getTime();
+    const now = Date.now();
+    const startAtMs = test.scheduledStartAt ? new Date(test.scheduledStartAt).getTime() : Number.NaN;
+    const endAtMs = test.scheduledEndAt ? new Date(test.scheduledEndAt).getTime() : Number.NaN;
+    const hasScheduleWindow = Number.isFinite(startAtMs) && Number.isFinite(endAtMs);
+    let canStart = true;
+    let windowStatus = 'none';
+
+    if (hasScheduleWindow) {
+      if (now < startAtMs) {
+        canStart = false;
+        windowStatus = 'upcoming';
+      } else if (now > endAtMs) {
+        canStart = false;
+        windowStatus = 'closed';
+      } else {
+        canStart = true;
+        windowStatus = 'open';
+      }
+    }
+
     const sanitizedQuestions = (test.questions || []).map((question) => ({
       text: question.text,
       options: question.options || []
@@ -444,8 +648,17 @@ export async function studentTestsQueue(req, res) {
       ...test,
       questions: sanitizedQuestions,
       subjectName: subjectMap.get(test.subjectId.toString()) || '',
-      teacherName: teacherMap.get(test.teacherId.toString()) || ''
+      teacherName: teacherMap.get(test.teacherId.toString()) || '',
+      canStart,
+      windowStatus
     };
+
+    if (hasScheduleWindow) {
+      if (windowStatus === 'closed') pending.push(withMeta);
+      else today.push(withMeta);
+      return;
+    }
+
     if (createdAt >= threshold) today.push(withMeta);
     else pending.push(withMeta);
   });
@@ -464,6 +677,16 @@ export async function studentSubmitAttempt(req, res) {
   }).lean();
   if (!test) return notFound(res, 'Test not found.');
 
+  if (test.scheduledStartAt && test.scheduledEndAt) {
+    const startAtMs = new Date(test.scheduledStartAt).getTime();
+    const endAtMs = new Date(test.scheduledEndAt).getTime();
+    const now = Date.now();
+
+    if (Number.isFinite(startAtMs) && Number.isFinite(endAtMs) && (now < startAtMs || now > endAtMs)) {
+      return badRequest(res, 'This test can only be attended within its scheduled window.');
+    }
+  }
+
   const existing = await Attempt.findOne({
     institutionId: req.auth.institutionId,
     studentId: req.auth.userId,
@@ -474,14 +697,20 @@ export async function studentSubmitAttempt(req, res) {
   const payload = parsed.data;
   let scorePercent = null;
   let correctCount = 0;
+  let wrongCount = 0;
+  let assignedMarks = null;
   let answers = [];
 
-  if (test.type === 'mcq' || test.type === 'true_false') {
+  if (test.type === 'mcq') {
+    const correctMark = Number(test.mcqCorrectMark ?? 1);
+    const wrongMark = Number(test.mcqWrongMark ?? 0);
+
     answers = test.questions.map((question, index) => {
       const selectedIndex =
         typeof payload.answers[index] === 'number' ? payload.answers[index] : null;
       const isCorrect = selectedIndex === question.correctIndex;
       if (isCorrect) correctCount += 1;
+      else if (selectedIndex != null) wrongCount += 1;
       return {
         questionText: question.text,
         selectedIndex,
@@ -489,7 +718,10 @@ export async function studentSubmitAttempt(req, res) {
         isCorrect
       };
     });
-    scorePercent = Math.round((correctCount / test.questions.length) * 100);
+    assignedMarks = Number((correctCount * correctMark + wrongCount * wrongMark).toFixed(2));
+    const maxMarks = Number((test.questions.length * correctMark).toFixed(2));
+    const rawPercent = maxMarks > 0 ? (assignedMarks / maxMarks) * 100 : 0;
+    scorePercent = Math.max(0, Math.min(100, Math.round(rawPercent)));
   } else {
     answers = test.questions.map((question, index) => ({
       questionText: question.text,
@@ -503,7 +735,7 @@ export async function studentSubmitAttempt(req, res) {
     teacherId: test.teacherId,
     testId: test._id,
     type: test.type,
-    assignedMarks: scorePercent,
+    assignedMarks,
     scorePercent,
     correctCount,
     totalQuestions: test.questions.length,
@@ -587,15 +819,25 @@ export async function studentAttemptAnswerKey(req, res) {
     studentId: req.auth.userId
   }).lean();
   if (!attempt) return notFound(res, 'Attempt not found.');
-  if (attempt.type !== 'mcq' && attempt.type !== 'true_false') {
-    return badRequest(res, 'Answer key is only for objective attempts.');
-  }
 
   const test = await Test.findOne({
     _id: attempt.testId,
     institutionId: req.auth.institutionId
   }).lean();
   if (!test) return notFound(res, 'Test not found.');
+
+  if (test.answerKeyPdfUrl) {
+    return ok(res, {
+      title: test.title,
+      source: 'pdf',
+      downloadUrl: test.answerKeyPdfUrl,
+      fileName: test.answerKeyPdfName || `${test.title || 'test'}-answer-key.pdf`
+    });
+  }
+
+  if (attempt.type !== 'mcq') {
+    return badRequest(res, 'Answer key is not available for this attempt yet.');
+  }
 
   const answerKey = test.questions.map((question, index) => ({
     questionNumber: index + 1,
@@ -607,6 +849,7 @@ export async function studentAttemptAnswerKey(req, res) {
 
   return ok(res, {
     title: test.title,
+    source: 'inline',
     answerKey
   });
 }

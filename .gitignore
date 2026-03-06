@@ -7,5 +7,7 @@ yarn-error.log*
 .env
 backend/.env
 .vercel
+backups/
 
 .npm-cache/
+.playwright-cli/

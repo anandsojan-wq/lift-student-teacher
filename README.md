@@ -13,6 +13,8 @@ This version is cleaned and simplified for stability and usability:
 - Teacher class planning flow added and connected to student class view.
 - Objective test creation improved with predefined question boxes.
 - Notification "mark read" behavior now removes notifications.
+- One-click QA check button available inside Admin, Teacher, and Student dashboards.
+- Faster tab switching and parallel teacher data loading for snappier response.
 
 ## Role Flows
 
@@ -93,6 +95,12 @@ Open:
 - Owner portal: `http://127.0.0.1:3000/owner.html`
 - API health: `http://127.0.0.1:5050/api/health`
 
+Quick QA from UI:
+
+- Login as Admin/Teacher/Student.
+- Click `Run QA Check` in the top-right.
+- You will get a pass/fail card for core APIs of that role.
+
 ## Seed Owner Account
 
 ```bash
@@ -147,6 +155,7 @@ Install flow:
 - Reduced dead student feature surface (insights/planner-cards/doubt routes removed)
 - Simplified student-plus controller to only used endpoints
 - Removed unused helper logic from frontend
+- Updated service worker strategy so API calls are never cached (prevents stale dashboard data)
 
 ## Next Recommended Step
 
@@ -156,3 +165,13 @@ Move to backend hardening and production readiness:
 2. Add role-based integration tests (Owner/Admin/Teacher/Student).
 3. Add DB indexes review for scaling.
 4. Lock secrets and rotate all credentials before production rollout.
+
+## SaaS Readiness (Implemented)
+
+- API request IDs + structured error metadata
+- Rate limiting for global traffic, login attempts, and write-heavy requests
+- Secure cookie-based login sessions with server-side logout
+- Subscription enforcement middleware (inactive/cancelled/expired institutions are blocked)
+- Readiness probe endpoint: `GET /api/ready`
+- PWA install support + branded app icons
+- Vercel edge security headers for production responses

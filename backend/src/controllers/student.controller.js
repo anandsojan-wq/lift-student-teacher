@@ -37,13 +37,21 @@ export async function testHistory(req, res) {
     .lean();
 
   const testIds = attempts.map((a) => a.testId);
-  const tests = await Test.find({ _id: { $in: testIds } }).select('title subjectId type').lean();
+  const tests = await Test.find({ _id: { $in: testIds } })
+    .select('title subjectId type answerKeyPdfUrl answerKeyPdfName')
+    .lean();
   const testMap = new Map(tests.map((t) => [t._id.toString(), t]));
 
-  const history = attempts.map((attempt) => ({
-    ...attempt,
-    test: testMap.get(attempt.testId.toString()) || null
-  }));
+  const history = attempts.map((attempt) => {
+    const test = testMap.get(attempt.testId.toString()) || null;
+    const answerKeyAvailable = Boolean(test && (attempt.type === 'mcq' || test.answerKeyPdfUrl));
+
+    return {
+      ...attempt,
+      answerKeyAvailable,
+      test
+    };
+  });
 
   return ok(res, { history });
 }
@@ -62,8 +70,12 @@ export async function syllabi(req, res) {
     .sort({ name: 1 })
     .lean();
 
+  const teacherIds = subjects
+    .map((subject) => (subject.teacherId ? subject.teacherId.toString() : ''))
+    .filter(Boolean);
+
   const teachers = await User.find({
-    _id: { $in: subjects.map((subject) => subject.teacherId) }
+    _id: { $in: teacherIds }
   })
     .select('fullName')
     .lean();
@@ -72,7 +84,7 @@ export async function syllabi(req, res) {
   return ok(res, {
     syllabi: subjects.map((subject) => ({
       ...subject,
-      teacherName: teacherMap.get(subject.teacherId.toString()) || ''
+      teacherName: subject.teacherId ? teacherMap.get(subject.teacherId.toString()) || '' : ''
     }))
   });
 }
