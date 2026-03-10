@@ -11,3 +11,5 @@ backups/
 
 .npm-cache/
 .playwright-cli/
+test-results/
+playwright-report/

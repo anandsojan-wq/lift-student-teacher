@@ -79,9 +79,14 @@ function normalizeLongQuestions(rawQuestions) {
     if (!safeText) {
       throw new Error(`Question ${index + 1}: question text is required.`);
     }
+    const safeOptions = Array.isArray(question.options)
+      ? question.options
+          .map((option) => String(option || '').trim())
+          .filter(Boolean)
+      : [];
     return {
       text: safeText,
-      options: [],
+      options: safeOptions,
       correctIndex: undefined
     };
   });
@@ -647,6 +652,12 @@ export async function studentTestsQueue(req, res) {
     const withMeta = {
       ...test,
       questions: sanitizedQuestions,
+      questionPdfUrl: '',
+      questionPdfName: '',
+      sourcePdfName: '',
+      hasAnswerKey: Boolean(test.type === 'mcq' || test.answerKeyPdfUrl),
+      answerKeyPdfUrl: '',
+      answerKeyPdfName: '',
       subjectName: subjectMap.get(test.subjectId.toString()) || '',
       teacherName: teacherMap.get(test.teacherId.toString()) || '',
       canStart,
@@ -725,7 +736,22 @@ export async function studentSubmitAttempt(req, res) {
   } else {
     answers = test.questions.map((question, index) => ({
       questionText: question.text,
-      answerText: String(payload.answers[index] || '').trim()
+      answerText:
+        Array.isArray(question.options) && question.options.length >= 2
+          ? ''
+          : String(payload.answers[index] || '').trim(),
+      selectedIndex:
+        Array.isArray(question.options) && question.options.length >= 2 && typeof payload.answers[index] === 'number'
+          ? payload.answers[index]
+          : null,
+      selectedOption:
+        Array.isArray(question.options) &&
+        question.options.length >= 2 &&
+        typeof payload.answers[index] === 'number' &&
+        payload.answers[index] >= 0 &&
+        payload.answers[index] < question.options.length
+          ? question.options[payload.answers[index]]
+          : ''
     }));
   }
 

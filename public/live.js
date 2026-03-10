@@ -1121,29 +1121,111 @@ async function extractQuestionsFromPdf(file) {
   }
 
   const markerRegex = /^((q(uestion)?\s*)?\d+[\.\):\-]|q[\.\):\-]?\d+)\s*/i;
-  const optionRegex = /^([a-d][\)\.\-:]|option\s*[a-d])/i;
+  const optionRegex = /^([a-h][\)\.\-:]|option\s*[a-h])/i;
+  const answerRegex = /^(answer|correct answer|ans)[\s:\-]/i;
+
+  const stripQuestionMarker = (line) => line.replace(markerRegex, '').trim() || line.trim();
+  const stripOptionMarker = (line) =>
+    line
+      .replace(/^option\s*/i, '')
+      .replace(/^[a-h][\)\.\-:]\s*/i, '')
+      .trim();
+  const extractInlineOptions = (rawText) => {
+    const text = String(rawText || '').replace(/\s+/g, ' ').trim();
+    if (!text) return null;
+
+    const matches = [...text.matchAll(/(?:^|\s)([A-H])[\)\.\-:]\s*/gi)];
+    if (matches.length < 2) return null;
+
+    const questionText = text.slice(0, matches[0].index).trim();
+    if (!questionText) return null;
+
+    const options = matches
+      .map((match, index) => {
+        const start = match.index + match[0].length;
+        const end = index + 1 < matches.length ? matches[index + 1].index : text.length;
+        return text.slice(start, end).replace(/\s+/g, ' ').trim();
+      })
+      .filter(Boolean);
+
+    if (options.length < 2) return null;
+    return { questionText, options };
+  };
+  const buildQuestionFromBlock = (lines, index) => {
+    const safeLines = lines
+      .map((line) => String(line || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .filter((line) => !answerRegex.test(line));
+
+    if (!safeLines.length) return null;
+
+    let questionText = '';
+    let options = [];
+
+    const optionLines = safeLines.filter((line) => optionRegex.test(line));
+    const contentLines = safeLines.filter((line) => !optionRegex.test(line));
+
+    if (optionLines.length >= 2) {
+      questionText = contentLines.join(' ').trim();
+      options = optionLines.map(stripOptionMarker).filter(Boolean);
+    }
+
+    if (!options.length) {
+      const inlineParsed = extractInlineOptions(safeLines.join(' '));
+      if (inlineParsed) {
+        questionText = inlineParsed.questionText;
+        options = inlineParsed.options;
+      } else {
+        questionText = contentLines.join(' ').trim() || safeLines.join(' ').trim();
+      }
+    }
+
+    questionText = questionText.replace(/\s+/g, ' ').trim();
+    if (!questionText) return null;
+
+    const normalizedQuestion = {
+      text:
+        questionText.length > 420
+          ? `${questionText.slice(0, 417)}...`
+          : questionText || `Question ${index + 1}`
+    };
+
+    if (options.length >= 2) {
+      normalizedQuestion.options = options
+        .map((option) => option.replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+        .slice(0, 8);
+    }
+
+    return normalizedQuestion;
+  };
+
   const questionBlocks = [];
-  let current = '';
+  let currentBlock = [];
 
   filteredLines.forEach((line) => {
     const isQuestionStart = markerRegex.test(line);
     const isOptionLine = optionRegex.test(line);
 
     if (isQuestionStart && !isOptionLine) {
-      if (current) questionBlocks.push(current.trim());
-      current = line.replace(markerRegex, '').trim() || line.trim();
+      if (currentBlock.length) questionBlocks.push(currentBlock);
+      currentBlock = [stripQuestionMarker(line)];
       return;
     }
 
-    if (isOptionLine) return;
-    current = current ? `${current} ${line}` : line;
+    if (!currentBlock.length) {
+      currentBlock = [line];
+      return;
+    }
+
+    currentBlock.push(line);
   });
 
-  if (current) questionBlocks.push(current.trim());
+  if (currentBlock.length) questionBlocks.push(currentBlock);
 
   let normalized = questionBlocks
-    .map((text) => text.replace(/\s+/g, ' ').trim())
-    .filter((text) => text.length >= 1);
+    .map((block, index) => buildQuestionFromBlock(block, index))
+    .filter(Boolean);
 
   if (!normalized.length) {
     normalized = filteredLines
@@ -1151,7 +1233,9 @@ async function extractQuestionsFromPdf(file) {
       .split(/\?/)
       .map((chunk) => chunk.replace(/\s+/g, ' ').trim())
       .filter((chunk) => chunk.length >= 3)
-      .map((chunk) => `${chunk}?`);
+      .map((chunk, index) => ({
+        text: `${chunk}?` || `Question ${index + 1}`
+      }));
   }
 
   normalized = normalized.slice(0, 40);
@@ -1159,8 +1243,11 @@ async function extractQuestionsFromPdf(file) {
     throw new Error('Could not detect questions from this PDF.');
   }
 
-  return normalized.map((text, index) => ({
-    text: text.length > 320 ? `${text.slice(0, 317)}...` : text || `Question ${index + 1}`
+  return normalized.map((question, index) => ({
+    text: String(question?.text || '').trim() || `Question ${index + 1}`,
+    ...(Array.isArray(question?.options) && question.options.length >= 2
+      ? { options: question.options }
+      : {})
   }));
 }
 
@@ -1181,7 +1268,7 @@ function assessmentAnswersMarkup(attempt) {
             (item, index) => `
               <article class="assessment-answer-item">
                 <p><strong>Q${index + 1}:</strong> ${escapeHtml(item.questionText || '')}</p>
-                <p class="muted"><strong>Answer:</strong> ${escapeHtml(item.answerText || '(No answer)')}</p>
+                <p class="muted"><strong>Answer:</strong> ${escapeHtml(item.answerText || item.selectedOption || '(No answer)')}</p>
               </article>
             `
           )
@@ -3177,7 +3264,7 @@ async function renderTeacherDashboard() {
                           />
                         </div>
                         <div>
-                          <label for="testDuration">Duration Minutes (MCQ)</label>
+                          <label for="testDuration">Duration of the Exam (MCQ)</label>
                           <select id="testDuration">
                             <option value="5" ${Number(state.teacherMcqDurationMinutes) === 5 ? 'selected' : ''}>5</option>
                             <option value="10" ${Number(state.teacherMcqDurationMinutes) === 10 ? 'selected' : ''}>10</option>
@@ -3215,7 +3302,7 @@ async function renderTeacherDashboard() {
                       `
                       : `
                         <div>
-                          <label for="testDuration">Duration Minutes (PDF Upload)</label>
+                          <label for="testDuration">Duration of the Exam (PDF Upload)</label>
                           <select id="testDuration">
                             <option value="30" ${Number(state.teacherPdfDurationMinutes) === 30 ? 'selected' : ''}>30</option>
                             <option value="60" ${Number(state.teacherPdfDurationMinutes) === 60 ? 'selected' : ''}>60</option>
@@ -3643,7 +3730,7 @@ async function renderTeacherDashboard() {
                     <input id="reconductTitle" type="text" value="${escapeHtml(state.teacherReconductDraft.title)}" />
                   </div>
                   <div>
-                    <label for="reconductDuration">Duration (Minutes)</label>
+                    <label for="reconductDuration">Duration of the Exam</label>
                     <input id="reconductDuration" type="number" min="1" max="180" value="${escapeHtml(state.teacherReconductDraft.durationMinutes)}" />
                   </div>
                   <div>
@@ -4809,7 +4896,7 @@ function renderStudentAttemptResult(test, attempt, backTab) {
           <p class="muted">Time spent: ${Math.round((attempt.timeSpentSeconds || 0) / 60)} minutes</p>
 
           ${
-            test.type === 'mcq' || test.answerKeyPdfUrl
+            test.type === 'mcq' || test.hasAnswerKey
               ? '<button class="cta-soft" id="viewAnswerKeyBtn">View Answer Key</button>'
               : ''
           }
@@ -4848,7 +4935,9 @@ function renderStudentTestAttempt(test, backTab) {
 
   const questionMarkup = (test.questions || [])
     .map((question, index) => {
-      if (test.type === 'mcq') {
+      const hasOptions = Array.isArray(question.options) && question.options.length >= 2;
+
+      if (test.type === 'mcq' || hasOptions) {
         const options = (question.options || [])
           .map(
             (option, optionIndex) => `
@@ -4896,21 +4985,8 @@ function renderStudentTestAttempt(test, backTab) {
               ? `<p class="muted">Allowed window: ${escapeHtml(formatTestWindow(test))}</p>`
               : ''
           }
+          <p class="muted">This test is completed inside the system. The original uploaded PDF is not shown to students.</p>
         </section>
-
-        ${
-          test.questionPdfUrl
-            ? `
-              <section class="panel">
-                <div class="progress-row">
-                  <h3>Question Paper (Original PDF)</h3>
-                  <a href="${escapeHtml(test.questionPdfUrl)}" target="_blank" rel="noreferrer">Open in new tab</a>
-                </div>
-                <iframe class="pdf-viewer resource-pdf-viewer" src="${escapeHtml(test.questionPdfUrl)}" title="Question PDF"></iframe>
-              </section>
-            `
-            : ''
-        }
 
         <section class="panel">
           <div class="mcq-list">${questionMarkup}</div>
@@ -4941,7 +5017,9 @@ function renderStudentTestAttempt(test, backTab) {
     runtime.attemptSubmitting = true;
 
     const answers = (test.questions || []).map((_, index) => {
-      if (test.type === 'mcq') {
+      const question = test.questions?.[index] || {};
+      const hasOptions = Array.isArray(question.options) && question.options.length >= 2;
+      if (test.type === 'mcq' || hasOptions) {
         const checked = document.querySelector(`input[name=\"q-${index}\"]:checked`);
         return checked ? Number(checked.value) : null;
       }
