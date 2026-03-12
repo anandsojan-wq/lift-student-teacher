@@ -5512,6 +5512,46 @@ function studentResourceActionMarkup(resource) {
   return `<a href="${escapeHtml(resource.value)}" target="_blank" rel="noreferrer">Open Resource</a>`;
 }
 
+function studentClassResourceMarkup(resource) {
+  if (!resource) return '<span class="muted">No file</span>';
+
+  const safeId = String(resource.id || resource._id || '').trim();
+  const safeType = String(resource.resourceType || '').toLowerCase();
+  const protectedViewUrl =
+    (isStudentPdfResource(resource) && String(resource.viewUrl || '').trim()) ||
+    (safeId && (safeType === 'pdf' || safeType === 'ebook')
+      ? `/api/student/resources/${safeId}/view`
+      : '');
+
+  if (protectedViewUrl) {
+    return `
+      <div class="class-resource-block">
+        <p><strong>${escapeHtml(resource.title || 'Attached file')}</strong></p>
+        <button
+          type="button"
+          class="mini-btn"
+          data-open-student-pdf="1"
+          data-pdf-url="${escapeHtml(protectedViewUrl)}"
+          data-pdf-title="${escapeHtml(resource.title || 'Class Resource')}"
+        >
+          View Attached File
+        </button>
+      </div>
+    `;
+  }
+
+  if (String(resource.value || '').trim()) {
+    return `
+      <div class="class-resource-block">
+        <p><strong>${escapeHtml(resource.title || 'Attached resource')}</strong></p>
+        <a href="${escapeHtml(resource.value)}" target="_blank" rel="noreferrer">Open Resource</a>
+      </div>
+    `;
+  }
+
+  return '<span class="muted">No file</span>';
+}
+
 function resourcesGroupedMarkup(resources) {
   const groups = {
     pdf: [],
@@ -5814,7 +5854,7 @@ async function renderStudentDashboard() {
                               ${item.description ? `<p>${escapeHtml(item.description)}</p>` : ''}
                               ${
                                 item.resource
-                                  ? studentResourceActionMarkup(item.resource)
+                                  ? studentClassResourceMarkup(item.resource)
                                   : ''
                               }
                             </article>

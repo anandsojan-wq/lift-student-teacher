@@ -98,6 +98,7 @@ function serializePlan(plan, { subjectMap, teacherMap, resourceMap } = {}) {
     resource: resource
       ? {
           id: resource._id,
+          _id: resource._id,
           title: resource.title,
           resourceType: resource.resourceType,
           value: resource.value,
@@ -277,7 +278,7 @@ export async function studentTodayClasses(req, res) {
         serialized.resource = {
           ...serialized.resource,
           value: '',
-          viewUrl: `/api/student/resources/${serialized.resource.id}/view`
+          viewUrl: `/api/student/resources/${String(serialized.resource.id || serialized.resource._id || '')}/view`
         };
       }
       return serialized;
