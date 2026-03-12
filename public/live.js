@@ -5501,13 +5501,13 @@ function studentResourceActionMarkup(resource) {
         data-pdf-url="${escapeHtml(resource.viewUrl)}"
         data-pdf-title="${escapeHtml(resource.title || 'PDF Resource')}"
       >
-        View in PDF Viewer
+        View File
       </button>
     `;
   }
 
   if (!resource.value) return '<span class="muted">No file</span>';
-  return `<a href="${escapeHtml(resource.value)}" target="_blank" rel="noreferrer">Open Resource</a>`;
+  return `<a href="${escapeHtml(resource.value)}" target="_blank" rel="noreferrer">Open Link</a>`;
 }
 
 function studentClassResourceMarkup(resource) {
@@ -5527,12 +5527,12 @@ function studentClassResourceMarkup(resource) {
         <p><strong>${escapeHtml(resource.title || 'Attached file')}</strong></p>
         <button
           type="button"
-          class="mini-btn"
-          data-open-student-pdf="1"
-          data-pdf-url="${escapeHtml(protectedViewUrl)}"
-          data-pdf-title="${escapeHtml(resource.title || 'Class Resource')}"
-        >
-          View Attached File
+        class="mini-btn"
+        data-open-student-pdf="1"
+        data-pdf-url="${escapeHtml(protectedViewUrl)}"
+        data-pdf-title="${escapeHtml(resource.title || 'Class Resource')}"
+      >
+          View File
         </button>
       </div>
     `;
@@ -5542,7 +5542,7 @@ function studentClassResourceMarkup(resource) {
     return `
       <div class="class-resource-block">
         <p><strong>${escapeHtml(resource.title || 'Attached resource')}</strong></p>
-        <a href="${escapeHtml(resource.value)}" target="_blank" rel="noreferrer">Open Resource</a>
+        <a href="${escapeHtml(resource.value)}" target="_blank" rel="noreferrer">Open Link</a>
       </div>
     `;
   }
@@ -5956,7 +5956,7 @@ async function renderStudentDashboard() {
                                         data-open-student-pdf="1"
                                         data-pdf-url="${escapeHtml(item.viewUrl)}"
                                         data-pdf-title="${escapeHtml(item.name || 'Syllabus')}"
-                                      >View PDF</button>`
+                                      >View File</button>`
                                     : '-'
                                 }</td>
                               </tr>
