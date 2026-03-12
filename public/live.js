@@ -5344,9 +5344,9 @@ function buildStudentPdfViewerSrc(rawUrl) {
 function answerKeyViewerMarkup(payload, title = 'Answer Key') {
   if (!payload) return '';
   const safeTitle = escapeHtml(title);
-  const downloadUrl = String(payload.downloadUrl || '').trim();
+  const viewUrl = String(payload.viewUrl || '').trim();
 
-  if (downloadUrl) {
+  if (viewUrl) {
     return `
       <div class="test-modal-backdrop" data-close-student-answer-key></div>
       <section class="test-modal" role="dialog" aria-modal="true" aria-label="Answer Key Viewer">
@@ -5356,11 +5356,8 @@ function answerKeyViewerMarkup(payload, title = 'Answer Key') {
             <button class="mini-btn" type="button" data-close-student-answer-key>Close</button>
           </div>
           <p class="muted">View-only mode. Download is disabled in this interface.</p>
-          <iframe
-            class="pdf-viewer resource-pdf-viewer"
-            src="${escapeHtml(buildStudentPdfViewerSrc(downloadUrl))}"
-            title="Answer Key PDF Viewer"
-          ></iframe>
+          <p class="muted" id="studentAnswerKeyStatus">Loading PDF...</p>
+          <div class="pdf-viewer resource-pdf-viewer student-pdf-canvas-root" id="studentAnswerKeyCanvasRoot"></div>
         </div>
       </section>
     `;
@@ -5424,11 +5421,18 @@ function openStudentAnswerKeyViewer(payload, title = 'Answer Key') {
   wrapper.innerHTML = answerKeyViewerMarkup(payload, title);
   document.body.appendChild(wrapper);
   bindStudentAnswerKeyViewerEvents();
+  if (payload?.viewUrl) {
+    void renderProtectedPdfInto(payload.viewUrl, 'studentAnswerKeyCanvasRoot', 'studentAnswerKeyStatus');
+  }
 }
 
 async function renderStudentProtectedPdfDocument(url) {
-  const container = document.getElementById('studentPdfCanvasRoot');
-  const status = document.getElementById('studentPdfStatus');
+  return renderProtectedPdfInto(url, 'studentPdfCanvasRoot', 'studentPdfStatus');
+}
+
+async function renderProtectedPdfInto(url, containerId, statusId) {
+  const container = document.getElementById(containerId);
+  const status = document.getElementById(statusId);
   if (!container || !status) return;
 
   container.innerHTML = '';
@@ -5440,7 +5444,12 @@ async function renderStudentProtectedPdfDocument(url) {
   }
 
   try {
-    const response = await fetch(String(url || '').trim(), {
+    const rawUrl = String(url || '').trim();
+    const requestUrl = rawUrl.startsWith('/api/')
+      ? `${await resolveApiBase()}${rawUrl.slice(4)}`
+      : rawUrl;
+
+    const response = await fetch(requestUrl, {
       method: 'GET',
       credentials: 'include',
       cache: 'no-store'

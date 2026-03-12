@@ -12,6 +12,7 @@ import {
 } from '../controllers/resource.controller.js';
 import {
   studentAttemptAnswerKey,
+  studentAttemptAnswerKeyView,
   studentSubmitAttempt,
   studentTestsQueue
 } from '../controllers/test.controller.js';
@@ -30,6 +31,7 @@ router.get('/tests/queue', studentTestsQueue);
 router.get('/classes/today', studentTodayClasses);
 router.post('/tests/:testId/attempt', studentSubmitAttempt);
 router.get('/tests/attempts/:attemptId/answer-key', studentAttemptAnswerKey);
+router.get('/tests/attempts/:attemptId/answer-key/view', studentAttemptAnswerKeyView);
 router.get('/resources', studentListResources);
 router.get('/resources/:resourceId/view', studentViewResource);
 router.get('/syllabus', syllabi);

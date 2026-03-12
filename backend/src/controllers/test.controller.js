@@ -5,6 +5,7 @@ import { Subject } from '../models/Subject.js';
 import { Test } from '../models/Test.js';
 import { User } from '../models/User.js';
 import { trackAnalyticsEvent } from '../services/analytics.service.js';
+import { resolveInlineAsset, sendInlineAsset } from '../utils/protected-file.js';
 import { badRequest, created, notFound, ok } from '../utils/http.js';
 import { notifyUsers } from '../utils/notify.js';
 
@@ -856,8 +857,7 @@ export async function studentAttemptAnswerKey(req, res) {
     return ok(res, {
       title: test.title,
       source: 'pdf',
-      downloadUrl: test.answerKeyPdfUrl,
-      fileName: test.answerKeyPdfName || `${test.title || 'test'}-answer-key.pdf`
+      viewUrl: `/api/student/tests/attempts/${attempt._id}/answer-key/view`
     });
   }
 
@@ -878,4 +878,32 @@ export async function studentAttemptAnswerKey(req, res) {
     source: 'inline',
     answerKey
   });
+}
+
+export async function studentAttemptAnswerKeyView(req, res) {
+  const attempt = await Attempt.findOne({
+    _id: req.params.attemptId,
+    institutionId: req.auth.institutionId,
+    studentId: req.auth.userId
+  }).lean();
+  if (!attempt) return notFound(res, 'Attempt not found.');
+
+  const test = await Test.findOne({
+    _id: attempt.testId,
+    institutionId: req.auth.institutionId
+  }).lean();
+  if (!test || !test.answerKeyPdfUrl) return notFound(res, 'Answer key not found.');
+
+  try {
+    const asset = await resolveInlineAsset({
+      sourceUrl: test.answerKeyPdfUrl,
+      fallbackFileName:
+        test.answerKeyPdfName ||
+        `${String(test.title || 'answer-key').trim() || 'answer-key'}-answer-key.pdf`,
+      fallbackContentType: 'application/pdf'
+    });
+    return sendInlineAsset(res, asset);
+  } catch (error) {
+    return notFound(res, 'Answer key could not be opened.');
+  }
 }

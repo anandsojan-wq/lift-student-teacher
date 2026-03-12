@@ -85,4 +85,8 @@ test('teacher PDF upload becomes in-system student attempt without raw PDF leak'
 
   await expect(page.getByText('Submitted')).toBeVisible({ timeout: 30000 });
   await expect(page.getByRole('button', { name: 'View Answer Key' })).toBeVisible();
+  await page.getByRole('button', { name: 'View Answer Key' }).click();
+  await expect(page.getByText('View-only mode. Download is disabled in this interface.')).toBeVisible();
+  await expect(page.locator('iframe[title="Answer Key PDF Viewer"]')).toHaveCount(0);
+  await expect(page.locator('#studentAnswerKeyCanvasRoot canvas')).toHaveCount(1, { timeout: 30000 });
 });
