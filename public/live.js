@@ -3280,9 +3280,7 @@ async function renderTeacherDashboard() {
                                     <td>
                                       ${
                                         plan.resource
-                                          ? plan.resource.source === 'file'
-                                            ? `<a href="${escapeHtml(plan.resource.value)}" download="${escapeHtml(plan.resource.title || 'resource')}">Download</a>`
-                                            : `<a href="${escapeHtml(plan.resource.value)}" target="_blank" rel="noreferrer">Open</a>`
+                                          ? `<a href="${escapeHtml(plan.resource.value)}" target="_blank" rel="noreferrer">Open</a>`
                                           : '-'
                                       }
                                     </td>
