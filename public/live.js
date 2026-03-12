@@ -60,6 +60,8 @@ const state = {
   teacherMcqCorrectMark: 1,
   teacherMcqWrongMark: 0,
   teacherPdfDurationMinutes: 60,
+  teacherPdfPreview: null,
+  teacherPdfPreviewBusy: false,
   teacherTestAudienceMode: 'all',
   teacherTestSelectedStudentIds: [],
   teacherTestScheduleEnabled: false,
@@ -232,6 +234,8 @@ function resetUiStateOnLogout() {
   state.teacherMcqCorrectMark = 1;
   state.teacherMcqWrongMark = 0;
   state.teacherPdfDurationMinutes = 60;
+  state.teacherPdfPreview = null;
+  state.teacherPdfPreviewBusy = false;
   state.teacherTestAudienceMode = 'all';
   state.teacherTestSelectedStudentIds = [];
   state.teacherTestScheduleEnabled = false;
@@ -1082,44 +1086,11 @@ function buildMcqCombinedPdfLines(test) {
   ];
 }
 
-async function extractQuestionsFromPdf(file) {
+async function extractQuestionsFromPdf(file, options = {}) {
   if (!file) throw new Error('Please upload a PDF file.');
   if (!window.pdfjsLib) throw new Error('PDF reader is not ready. Refresh and try again.');
 
-  const arrayBuffer = await file.arrayBuffer();
-  const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const lines = [];
-
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    const page = await pdf.getPage(pageNumber);
-    const textContent = await page.getTextContent();
-    const buckets = new Map();
-
-    (textContent.items || []).forEach((item) => {
-      const text = String(item.str || '').trim();
-      if (!text) return;
-      const y = Math.round(Number(item.transform?.[5] || 0));
-      const key = Number.isFinite(y) ? y : 0;
-      if (!buckets.has(key)) buckets.set(key, []);
-      buckets.get(key).push(text);
-    });
-
-    const ordered = [...buckets.entries()]
-      .sort((a, b) => b[0] - a[0])
-      .map(([, row]) => row.join(' ').replace(/\s+/g, ' ').trim())
-      .filter(Boolean);
-
-    lines.push(...ordered);
-  }
-
-  const filteredLines = lines
-    .map((line) => line.replace(/\s+/g, ' ').trim())
-    .filter((line) => line.length >= 3);
-
-  if (!filteredLines.length) {
-    throw new Error('No readable question text found in this PDF.');
-  }
-
+  const onStatus = typeof options.onStatus === 'function' ? options.onStatus : () => {};
   const markerRegex = /^((q(uestion)?\s*)?\d+[\.\):\-]|q[\.\):\-]?\d+)\s*/i;
   const optionRegex = /^([a-h][\)\.\-:]|option\s*[a-h])/i;
   const answerRegex = /^(answer|correct answer|ans)[\s:\-]/i;
@@ -1200,55 +1171,298 @@ async function extractQuestionsFromPdf(file) {
     return normalizedQuestion;
   };
 
-  const questionBlocks = [];
-  let currentBlock = [];
+  const normalizeQuestions = (rawLines) => {
+    const filteredLines = (rawLines || [])
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .filter((line) => line.length >= 3);
 
-  filteredLines.forEach((line) => {
-    const isQuestionStart = markerRegex.test(line);
-    const isOptionLine = optionRegex.test(line);
+    if (!filteredLines.length) return [];
 
-    if (isQuestionStart && !isOptionLine) {
-      if (currentBlock.length) questionBlocks.push(currentBlock);
-      currentBlock = [stripQuestionMarker(line)];
-      return;
+    const questionBlocks = [];
+    let currentBlock = [];
+
+    filteredLines.forEach((line) => {
+      const isQuestionStart = markerRegex.test(line);
+      const isOptionLine = optionRegex.test(line);
+
+      if (isQuestionStart && !isOptionLine) {
+        if (currentBlock.length) questionBlocks.push(currentBlock);
+        currentBlock = [stripQuestionMarker(line)];
+        return;
+      }
+
+      if (!currentBlock.length) {
+        currentBlock = [line];
+        return;
+      }
+
+      currentBlock.push(line);
+    });
+
+    if (currentBlock.length) questionBlocks.push(currentBlock);
+
+    let normalized = questionBlocks
+      .map((block, index) => buildQuestionFromBlock(block, index))
+      .filter(Boolean);
+
+    if (!normalized.length) {
+      normalized = filteredLines
+        .join('\n')
+        .split(/\?/)
+        .map((chunk) => chunk.replace(/\s+/g, ' ').trim())
+        .filter((chunk) => chunk.length >= 3)
+        .map((chunk, index) => ({
+          text: `${chunk}?` || `Question ${index + 1}`
+        }));
     }
 
-    if (!currentBlock.length) {
-      currentBlock = [line];
-      return;
+    normalized = normalized.slice(0, 40);
+    return normalized.map((question, index) => ({
+      text: String(question?.text || '').trim() || `Question ${index + 1}`,
+      ...(Array.isArray(question?.options) && question.options.length >= 2
+        ? { options: question.options }
+        : {})
+    }));
+  };
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const lines = [];
+
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    onStatus(`Reading PDF page ${pageNumber} of ${pdf.numPages}...`);
+    const page = await pdf.getPage(pageNumber);
+    const textContent = await page.getTextContent();
+    const buckets = new Map();
+
+    (textContent.items || []).forEach((item) => {
+      const text = String(item.str || '').trim();
+      if (!text) return;
+      const y = Math.round(Number(item.transform?.[5] || 0));
+      const key = Number.isFinite(y) ? y : 0;
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(text);
+    });
+
+    const ordered = [...buckets.entries()]
+      .sort((a, b) => b[0] - a[0])
+      .map(([, row]) => row.join(' ').replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+
+    lines.push(...ordered);
+  }
+
+  let questions = normalizeQuestions(lines);
+  let usedOcr = false;
+
+  if (!questions.length) {
+    if (!window.Tesseract?.recognize) {
+      throw new Error('No readable question text found in this PDF and OCR is unavailable.');
     }
 
-    currentBlock.push(line);
-  });
+    usedOcr = true;
+    const ocrLines = [];
 
-  if (currentBlock.length) questionBlocks.push(currentBlock);
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      onStatus(`Scanned PDF detected. Running OCR on page ${pageNumber} of ${pdf.numPages}...`);
+      const page = await pdf.getPage(pageNumber);
+      const viewport = page.getViewport({ scale: 2 });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      const context = canvas.getContext('2d');
+      if (!context) continue;
 
-  let normalized = questionBlocks
-    .map((block, index) => buildQuestionFromBlock(block, index))
-    .filter(Boolean);
+      await page.render({ canvasContext: context, viewport }).promise;
+      const result = await window.Tesseract.recognize(canvas, 'eng', {
+        logger: (message) => {
+          if (message?.status === 'recognizing text' && Number.isFinite(message.progress)) {
+            onStatus(`OCR page ${pageNumber}/${pdf.numPages}: ${Math.round(message.progress * 100)}%`);
+          }
+        }
+      });
 
-  if (!normalized.length) {
-    normalized = filteredLines
-      .join('\n')
-      .split(/\?/)
-      .map((chunk) => chunk.replace(/\s+/g, ' ').trim())
-      .filter((chunk) => chunk.length >= 3)
-      .map((chunk, index) => ({
-        text: `${chunk}?` || `Question ${index + 1}`
-      }));
+      const pageText = String(result?.data?.text || '');
+      ocrLines.push(
+        ...pageText
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+      );
+    }
+
+    questions = normalizeQuestions(ocrLines);
   }
 
-  normalized = normalized.slice(0, 40);
-  if (!normalized.length) {
-    throw new Error('Could not detect questions from this PDF.');
+  if (!questions.length) {
+    throw new Error('Could not detect questions from this PDF. Try a clearer PDF or review with OCR.');
   }
 
-  return normalized.map((question, index) => ({
-    text: String(question?.text || '').trim() || `Question ${index + 1}`,
-    ...(Array.isArray(question?.options) && question.options.length >= 2
-      ? { options: question.options }
-      : {})
-  }));
+  return {
+    questions,
+    usedOcr
+  };
+}
+
+function getFileSignature(file) {
+  if (!file) return '';
+  return [file.name || '', file.size || 0, file.lastModified || 0].join('::');
+}
+
+function teacherPdfPreviewMarkup() {
+  const preview = state.teacherPdfPreview;
+  if (state.teacherPdfPreviewBusy) {
+    return `
+      <section class="pdf-preview-panel loading">
+        <div class="progress-row">
+          <h4>Teacher Preview</h4>
+          <span class="preview-badge">Processing</span>
+        </div>
+        <p class="muted">${escapeHtml(preview?.status || 'Extracting questions from PDF...')}</p>
+      </section>
+    `;
+  }
+
+  if (!preview) {
+    return `
+      <section class="pdf-preview-panel empty">
+        <div class="progress-row">
+          <h4>Teacher Preview</h4>
+          <span class="preview-badge">Waiting</span>
+        </div>
+        <p class="muted">Upload a question PDF and preview the extracted exam before you publish it.</p>
+      </section>
+    `;
+  }
+
+  if (preview.error) {
+    return `
+      <section class="pdf-preview-panel error">
+        <div class="progress-row">
+          <h4>Teacher Preview</h4>
+          <span class="preview-badge">Needs Review</span>
+        </div>
+        <p class="muted">${escapeHtml(preview.error)}</p>
+      </section>
+    `;
+  }
+
+  const questions = Array.isArray(preview.questions) ? preview.questions : [];
+  return `
+    <section class="pdf-preview-panel">
+      <div class="progress-row">
+        <h4>Teacher Preview</h4>
+        <span class="preview-badge">${preview.usedOcr ? 'OCR Fallback' : 'Direct PDF Text'}</span>
+      </div>
+      <p class="muted">
+        ${escapeHtml(questions.length)} question(s) detected. This is what students will see inside the exam screen.
+        ${preview.usedOcr ? ' OCR was used because the PDF looks scanned, so review the wording carefully.' : ''}
+      </p>
+      <div class="preview-question-list">
+        ${questions
+          .map(
+            (question, index) => `
+              <article class="preview-question-card">
+                <p><strong>Q${index + 1}.</strong> ${escapeHtml(question.text || '')}</p>
+                ${
+                  Array.isArray(question.options) && question.options.length
+                    ? `
+                      <div class="preview-option-list">
+                        ${question.options
+                          .map(
+                            (option, optionIndex) => `
+                              <span class="preview-option-chip">
+                                ${String.fromCharCode(65 + optionIndex)}. ${escapeHtml(option)}
+                              </span>
+                            `
+                          )
+                          .join('')}
+                      </div>
+                    `
+                    : '<p class="muted">Students will answer this question in a text box.</p>'
+                }
+              </article>
+            `
+          )
+          .join('')}
+      </div>
+    </section>
+  `;
+}
+
+function renderTeacherPdfPreview() {
+  const root = document.getElementById('teacherPdfPreviewRoot');
+  if (!root) return;
+  root.innerHTML = teacherPdfPreviewMarkup();
+}
+
+async function refreshTeacherPdfPreview(force = false) {
+  const questionPdfInput = document.getElementById('testPdfQuestionsFile');
+  const questionPdfFile = questionPdfInput?.files?.[0];
+
+  if (!questionPdfFile) {
+    state.teacherPdfPreview = null;
+    state.teacherPdfPreviewBusy = false;
+    renderTeacherPdfPreview();
+    return null;
+  }
+
+  const fileSignature = getFileSignature(questionPdfFile);
+  if (
+    !force &&
+    state.teacherPdfPreview &&
+    !state.teacherPdfPreview.error &&
+    state.teacherPdfPreview.fileSignature === fileSignature &&
+    Array.isArray(state.teacherPdfPreview.questions) &&
+    state.teacherPdfPreview.questions.length
+  ) {
+    renderTeacherPdfPreview();
+    return state.teacherPdfPreview;
+  }
+
+  state.teacherPdfPreviewBusy = true;
+  state.teacherPdfPreview = {
+    fileSignature,
+    status: 'Reading PDF...'
+  };
+  renderTeacherPdfPreview();
+
+  try {
+    const result = await extractQuestionsFromPdf(questionPdfFile, {
+      onStatus(message) {
+        state.teacherPdfPreview = {
+          ...(state.teacherPdfPreview || {}),
+          fileSignature,
+          status: message
+        };
+        renderTeacherPdfPreview();
+      }
+    });
+
+    state.teacherPdfPreviewBusy = false;
+    state.teacherPdfPreview = {
+      fileSignature,
+      status: 'Preview ready.',
+      questions: result.questions,
+      usedOcr: Boolean(result.usedOcr)
+    };
+    renderTeacherPdfPreview();
+    return state.teacherPdfPreview;
+  } catch (error) {
+    state.teacherPdfPreviewBusy = false;
+    state.teacherPdfPreview = {
+      fileSignature,
+      error: error.message || 'Could not extract questions from this PDF.'
+    };
+    renderTeacherPdfPreview();
+    throw error;
+  }
+}
+
+function clearTeacherPdfPreview() {
+  state.teacherPdfPreview = null;
+  state.teacherPdfPreviewBusy = false;
+  renderTeacherPdfPreview();
 }
 
 function assessmentAnswersMarkup(attempt) {
@@ -3366,6 +3580,11 @@ async function renderTeacherDashboard() {
                             <input id="testPdfAnswerKeyFile" type="file" accept=".pdf,application/pdf" required />
                           </div>
                         </div>
+                        <div class="inline-btn-row">
+                          <button type="button" class="mini-btn" id="previewPdfTestBtn">Preview Extracted Exam</button>
+                          <span class="muted">Students will answer the extracted paper inside the app. The original question PDF stays hidden from them.</span>
+                        </div>
+                        <div id="teacherPdfPreviewRoot">${teacherPdfPreviewMarkup()}</div>
                         <p class="muted">Students will attempt in-system. The uploaded answer-key PDF will be available in view-only mode after submission.</p>
                       </section>
                     `
@@ -4245,6 +4464,10 @@ async function renderTeacherDashboard() {
   if (testType) {
     testType.addEventListener('change', (event) => {
       state.teacherTestType = event.target.value;
+      if (state.teacherTestType !== 'pdf_upload') {
+        state.teacherPdfPreview = null;
+        state.teacherPdfPreviewBusy = false;
+      }
       void renderTeacherDashboard();
     });
   }
@@ -4371,6 +4594,38 @@ async function renderTeacherDashboard() {
     clearTargetsBtn.addEventListener('click', () => {
       state.teacherTestSelectedStudentIds = [];
       void renderTeacherDashboard();
+    });
+  }
+
+  const testPdfQuestionsFile = document.getElementById('testPdfQuestionsFile');
+  if (testPdfQuestionsFile) {
+    testPdfQuestionsFile.addEventListener('change', async () => {
+      try {
+        await refreshTeacherPdfPreview(true);
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
+    });
+  }
+
+  const testPdfAnswerKeyFile = document.getElementById('testPdfAnswerKeyFile');
+  if (testPdfAnswerKeyFile) {
+    testPdfAnswerKeyFile.addEventListener('change', () => {
+      if (state.teacherTestType === 'pdf_upload') renderTeacherPdfPreview();
+    });
+  }
+
+  const previewPdfTestBtn = document.getElementById('previewPdfTestBtn');
+  if (previewPdfTestBtn) {
+    previewPdfTestBtn.addEventListener('click', async () => {
+      await withButtonLoading(previewPdfTestBtn, 'Previewing...', async () => {
+        try {
+          await refreshTeacherPdfPreview(true);
+          showToast('Teacher preview updated.', 'success');
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
     });
   }
 
@@ -4503,12 +4758,30 @@ async function renderTeacherDashboard() {
               return;
             }
 
+            const fileSignature = getFileSignature(questionPdfFile);
+            let previewResult = state.teacherPdfPreview;
+            if (
+              !previewResult ||
+              previewResult.error ||
+              previewResult.fileSignature !== fileSignature ||
+              !Array.isArray(previewResult.questions) ||
+              !previewResult.questions.length
+            ) {
+              status.textContent = 'Extracting questions from PDF...';
+              previewResult = await refreshTeacherPdfPreview(true);
+            }
+
+            questions = Array.isArray(previewResult?.questions) ? previewResult.questions : [];
+            if (!questions.length) {
+              status.textContent = 'Could not extract questions from the uploaded PDF.';
+              showToast(status.textContent, 'error');
+              return;
+            }
+
             status.textContent = 'Uploading Questions PDF...';
             const uploadedQuestionsPdf = await uploadAsset(questionPdfFile, 'tests/questions');
             status.textContent = 'Uploading Answer Key PDF...';
             const uploadedAnswerKeyPdf = await uploadAsset(answerKeyPdfFile, 'tests/answer-keys');
-
-            questions = await extractQuestionsFromPdf(questionPdfFile);
             type = 'long';
             sourcePdfName = questionPdfFile?.name || '';
             questionPdfUrl = uploadedQuestionsPdf.url;

@@ -35,6 +35,9 @@ test('teacher PDF upload becomes in-system student attempt without raw PDF leak'
   await expect(page.locator('#testPdfQuestionsFile')).toBeVisible();
   await page.fill('#testTitle', TEST_TITLE);
   await page.setInputFiles('#testPdfQuestionsFile', QUESTIONS_PDF);
+  await expect(page.getByText('Teacher Preview')).toBeVisible();
+  await expect(page.getByText('What does CPU stand for?')).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText('Central Processing Unit')).toBeVisible({ timeout: 30000 });
   await page.setInputFiles('#testPdfAnswerKeyFile', ANSWER_KEY_PDF);
   await page.click('#createTestBtn');
   await expect(page.getByText(TEST_TITLE)).toBeVisible({ timeout: 30000 });

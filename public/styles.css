@@ -1899,6 +1899,71 @@ select:focus {
   padding-top: 10px;
 }
 
+.pdf-preview-panel {
+  margin-top: 12px;
+  border: 1px solid #d8e9f8;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #fafdff 0%, #f3f9ff 100%);
+  padding: 14px;
+}
+
+.pdf-preview-panel.loading,
+.pdf-preview-panel.empty {
+  background: #f8fbff;
+}
+
+.pdf-preview-panel.error {
+  border-color: #f1c8c8;
+  background: #fff8f8;
+}
+
+.preview-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #dff0ff;
+  color: #17517d;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.preview-question-list {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.preview-question-card {
+  border: 1px solid #e1edf8;
+  border-radius: 14px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.preview-question-card p {
+  margin: 0;
+}
+
+.preview-option-list {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.preview-option-chip {
+  display: inline-flex;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #eef6ff;
+  color: #1a4c76;
+  font-size: 0.82rem;
+  border: 1px solid #d9e9f7;
+}
+
 .objective-builder-grid {
   margin-top: 10px;
   display: grid;
