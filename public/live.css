@@ -407,6 +407,34 @@ select:focus {
     linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(247, 251, 255, 0.98) 100%);
 }
 
+.app-dialog-card {
+  width: min(520px, calc(100vw - 28px));
+}
+
+.dialog-form {
+  margin-top: 14px;
+}
+
+.dialog-form .muted {
+  margin-top: 0;
+}
+
+.dialog-actions {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.dialog-actions .cta-soft,
+.dialog-actions .cta-main,
+.dialog-actions .mini-btn {
+  width: auto;
+  min-width: 140px;
+  margin-top: 0;
+}
+
 .toast {
   border-radius: 16px;
   padding: 12px 14px;
@@ -485,6 +513,84 @@ select:focus {
     display: inline-flex;
     margin-right: 8px;
     margin-bottom: 8px;
+  }
+
+  .table-wrap.responsive-cards {
+    border: none;
+    background: transparent;
+    overflow: visible;
+  }
+
+  .table-wrap.responsive-cards table,
+  .table-wrap.responsive-cards thead,
+  .table-wrap.responsive-cards tbody,
+  .table-wrap.responsive-cards tr,
+  .table-wrap.responsive-cards th,
+  .table-wrap.responsive-cards td {
+    display: block;
+    width: 100%;
+  }
+
+  .table-wrap.responsive-cards thead {
+    display: none;
+  }
+
+  .table-wrap.responsive-cards tbody {
+    display: grid;
+    gap: 12px;
+  }
+
+  .table-wrap.responsive-cards tr {
+    border: 1px solid rgba(219, 233, 244, 0.96);
+    border-radius: 16px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(247, 251, 255, 0.98) 100%);
+    box-shadow: 0 12px 24px rgba(17, 94, 152, 0.06);
+    padding: 10px 12px;
+  }
+
+  .table-wrap.responsive-cards td {
+    min-width: 0;
+    white-space: normal;
+    border-bottom: 1px solid rgba(224, 236, 246, 0.9);
+    padding: 8px 0;
+    display: grid;
+    grid-template-columns: minmax(94px, 112px) 1fr;
+    gap: 10px;
+    align-items: start;
+  }
+
+  .table-wrap.responsive-cards td:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+
+  .table-wrap.responsive-cards td::before {
+    content: attr(data-label);
+    color: #6a8198;
+    font-size: 0.74rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .table-wrap.responsive-cards td.full-span {
+    display: block;
+    border-bottom: none;
+    padding: 2px 0;
+  }
+
+  .table-wrap.responsive-cards td.full-span::before {
+    content: none;
+  }
+
+  .dialog-actions {
+    justify-content: stretch;
+  }
+
+  .dialog-actions .cta-soft,
+  .dialog-actions .cta-main,
+  .dialog-actions .mini-btn {
+    width: 100%;
   }
 }
 

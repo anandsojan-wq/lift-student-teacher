@@ -79,6 +79,8 @@ const state = {
   studentResourceSubjectId: '',
   studentSyllabusSubjectId: '',
   studentPdfViewer: null,
+  adminDialog: null,
+  appDialog: null,
   qaReports: {
     admin: null,
     teacher: null,
@@ -439,6 +441,432 @@ function withButtonLoading(button, loadingText, action) {
   return Promise.resolve()
     .then(() => action())
     .finally(finish);
+}
+
+function enhanceResponsiveTables(root = document) {
+  root.querySelectorAll('.table-wrap').forEach((wrap) => {
+    const table = wrap.querySelector('table');
+    if (!table) return;
+
+    const headerCells = Array.from(table.querySelectorAll('thead th')).map((cell) =>
+      sanitizeValue(cell.textContent || '')
+    );
+    const bodyRows = Array.from(table.querySelectorAll('tbody tr'));
+    if (!headerCells.length || !bodyRows.length) return;
+
+    wrap.classList.add('responsive-cards');
+    bodyRows.forEach((row) => {
+      Array.from(row.children).forEach((cell, index) => {
+        if (!(cell instanceof HTMLElement)) return;
+        if (cell.tagName !== 'TD') return;
+        const span = Number(cell.getAttribute('colspan') || '1');
+        if (span > 1) {
+          cell.classList.add('full-span');
+          cell.removeAttribute('data-label');
+          return;
+        }
+        cell.classList.remove('full-span');
+        cell.setAttribute('data-label', headerCells[index] || '');
+      });
+    });
+  });
+}
+
+function closeAdminDialog(shouldRerender = true) {
+  state.adminDialog = null;
+  if (shouldRerender) {
+    void renderAdminDashboard();
+  }
+}
+
+function rerenderActiveRoleDashboard() {
+  const role = state.session?.user?.role;
+  if (role === 'admin') {
+    void renderAdminDashboard();
+    return;
+  }
+  if (role === 'teacher') {
+    void renderTeacherDashboard();
+    return;
+  }
+  if (role === 'student') {
+    void renderStudentDashboard();
+  }
+}
+
+function closeAppDialog(shouldRerender = true) {
+  state.appDialog = null;
+  if (shouldRerender) {
+    rerenderActiveRoleDashboard();
+  }
+}
+
+function appDialogMarkup() {
+  const dialog = state.appDialog;
+  if (!dialog) return '';
+
+  return `
+    <div class="test-modal-backdrop" data-close-app-dialog></div>
+    <section class="test-modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(dialog.title || 'Confirm action')}">
+      <div class="test-modal-card app-dialog-card">
+        <div class="progress-row">
+          <h3>${escapeHtml(dialog.title || 'Confirm action')}</h3>
+          <button type="button" class="mini-btn" data-close-app-dialog>Close</button>
+        </div>
+        <div class="dialog-form">
+          <p class="muted">${escapeHtml(dialog.message || '')}</p>
+          <p class="auth-note" id="appDialogStatus"></p>
+          <div class="dialog-actions">
+            <button type="button" class="cta-soft" data-close-app-dialog>Cancel</button>
+            <button type="button" class="mini-btn danger" id="appDialogDangerBtn">${escapeHtml(dialog.confirmLabel || 'Delete')}</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function bindAppDialogHandlers() {
+  document.querySelectorAll('[data-close-app-dialog]').forEach((button) => {
+    button.addEventListener('click', () => closeAppDialog());
+  });
+
+  const confirmBtn = document.getElementById('appDialogDangerBtn');
+  if (!confirmBtn || !state.appDialog) return;
+
+  confirmBtn.addEventListener('click', async () => {
+    const dialog = state.appDialog;
+    if (!dialog) return;
+    const status = document.getElementById('appDialogStatus');
+
+    await withButtonLoading(confirmBtn, dialog.loadingLabel || 'Working...', async () => {
+      try {
+        if (dialog.type === 'delete-student') {
+          await api(`/teacher/students/${dialog.studentId}`, { method: 'DELETE' });
+          showToast('Student deleted.', 'success');
+        }
+
+        if (dialog.type === 'delete-class-plan') {
+          await api(`/teacher/class-plans/${dialog.planId}`, { method: 'DELETE' });
+          showToast('Class plan deleted.', 'success');
+        }
+
+        if (dialog.type === 'delete-resource') {
+          await api(`/teacher/resources/${dialog.resourceId}`, { method: 'DELETE' });
+          showToast('Resource deleted.', 'success');
+        }
+
+        closeAppDialog(false);
+        rerenderActiveRoleDashboard();
+      } catch (error) {
+        status.textContent = error.message;
+        showToast(error.message, 'error');
+      }
+    });
+  });
+}
+
+function adminDialogMarkup() {
+  const dialog = state.adminDialog;
+  if (!dialog) return '';
+
+  const dialogTitleMap = {
+    'edit-course': 'Edit Course',
+    'edit-teacher': 'Edit Teacher',
+    'reset-teacher-password': 'Reset Teacher Password',
+    'delete-teacher': 'Delete Teacher',
+    'delete-course': 'Delete Course'
+  };
+
+  let body = '';
+
+  if (dialog.type === 'edit-course') {
+    body = `
+      <form id="adminEditCourseDialogForm" class="dialog-form">
+        <label for="adminDialogCourseName">Course Name</label>
+        <input id="adminDialogCourseName" type="text" minlength="2" required value="${escapeHtml(dialog.name || '')}" />
+
+        <label for="adminDialogCourseDuration">Course Duration</label>
+        <input id="adminDialogCourseDuration" type="text" minlength="2" required value="${escapeHtml(dialog.courseDuration || '')}" />
+
+        <p class="auth-note" id="adminDialogStatus"></p>
+        <div class="dialog-actions">
+          <button type="button" class="cta-soft" data-close-admin-dialog>Cancel</button>
+          <button type="submit" class="cta-main" id="adminDialogSubmitBtn">Save Changes</button>
+        </div>
+      </form>
+    `;
+  }
+
+  if (dialog.type === 'edit-teacher') {
+    body = `
+      <form id="adminEditTeacherDialogForm" class="dialog-form">
+        <label for="adminDialogTeacherFullName">Full Name</label>
+        <input id="adminDialogTeacherFullName" type="text" minlength="2" required value="${escapeHtml(dialog.fullName || '')}" />
+
+        <label for="adminDialogTeacherUsername">Username</label>
+        <input id="adminDialogTeacherUsername" type="text" minlength="3" required value="${escapeHtml(dialog.username || '')}" />
+
+        <label for="adminDialogTeacherEmail">Email</label>
+        <input id="adminDialogTeacherEmail" type="email" value="${escapeHtml(dialog.email || '')}" />
+
+        <label for="adminDialogTeacherPhone">Phone</label>
+        <input id="adminDialogTeacherPhone" type="text" value="${escapeHtml(dialog.phone || '')}" />
+
+        <p class="auth-note" id="adminDialogStatus"></p>
+        <div class="dialog-actions">
+          <button type="button" class="cta-soft" data-close-admin-dialog>Cancel</button>
+          <button type="submit" class="cta-main" id="adminDialogSubmitBtn">Save Teacher</button>
+        </div>
+      </form>
+    `;
+  }
+
+  if (dialog.type === 'reset-teacher-password') {
+    body = `
+      <form id="adminResetTeacherPasswordDialogForm" class="dialog-form">
+        <p class="muted">Create a new temporary password for <strong>${escapeHtml(dialog.username || '')}</strong>.</p>
+
+        <label for="adminDialogTeacherPassword">Temporary Password</label>
+        <input id="adminDialogTeacherPassword" type="text" minlength="6" required value="${escapeHtml(dialog.password || '')}" />
+
+        <p class="auth-note" id="adminDialogStatus"></p>
+        <div class="dialog-actions">
+          <button type="button" class="cta-soft" data-close-admin-dialog>Cancel</button>
+          <button type="submit" class="cta-main" id="adminDialogSubmitBtn">Reset Password</button>
+        </div>
+      </form>
+    `;
+  }
+
+  if (dialog.type === 'delete-teacher' || dialog.type === 'delete-course') {
+    body = `
+      <div class="dialog-form">
+        <p class="muted">${escapeHtml(dialog.message || '')}</p>
+        <p class="auth-note" id="adminDialogStatus"></p>
+        <div class="dialog-actions">
+          <button type="button" class="cta-soft" data-close-admin-dialog>Cancel</button>
+          <button type="button" class="mini-btn danger" id="adminDialogDangerBtn">Delete</button>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="test-modal-backdrop" data-close-admin-dialog></div>
+    <section class="test-modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(dialogTitleMap[dialog.type] || 'Admin dialog')}">
+      <div class="test-modal-card app-dialog-card">
+        <div class="progress-row">
+          <h3>${escapeHtml(dialogTitleMap[dialog.type] || 'Admin dialog')}</h3>
+          <button type="button" class="mini-btn" data-close-admin-dialog>Close</button>
+        </div>
+        ${body}
+      </div>
+    </section>
+  `;
+}
+
+function bindAdminDialogHandlers({ teachers, subjects, getTeacherTempPassword }) {
+  document.querySelectorAll('[data-close-admin-dialog]').forEach((button) => {
+    button.addEventListener('click', () => closeAdminDialog());
+  });
+
+  document.querySelectorAll('[data-admin-edit-course]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const subjectId = button.getAttribute('data-admin-edit-course');
+      const course = subjects.find((item) => item._id === subjectId);
+      if (!course) return;
+      state.adminDialog = {
+        type: 'edit-course',
+        subjectId,
+        name: course.name || '',
+        courseDuration: course.courseDuration || ''
+      };
+      void renderAdminDashboard();
+    });
+  });
+
+  document.querySelectorAll('[data-edit-teacher]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const teacherId = button.getAttribute('data-edit-teacher');
+      const teacher = teachers.find((item) => item._id === teacherId);
+      if (!teacher) return;
+      state.adminDialog = {
+        type: 'edit-teacher',
+        teacherId,
+        fullName: teacher.fullName || '',
+        username: teacher.username || '',
+        email: teacher.email || '',
+        phone: teacher.phone || ''
+      };
+      void renderAdminDashboard();
+    });
+  });
+
+  document.querySelectorAll('[data-reset-teacher-password]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const teacherId = button.getAttribute('data-reset-teacher-password');
+      const username = button.getAttribute('data-reset-teacher-username') || '';
+      if (!teacherId) return;
+      state.adminDialog = {
+        type: 'reset-teacher-password',
+        teacherId,
+        username,
+        password: generateTempPassword()
+      };
+      void renderAdminDashboard();
+    });
+  });
+
+  document.querySelectorAll('[data-delete-teacher]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const teacherId = button.getAttribute('data-delete-teacher');
+      const teacher = teachers.find((item) => item._id === teacherId);
+      if (!teacherId || !teacher) return;
+      state.adminDialog = {
+        type: 'delete-teacher',
+        teacherId,
+        message: `Delete ${teacher.fullName || teacher.username}? This teacher will no longer be able to sign in.`
+      };
+      void renderAdminDashboard();
+    });
+  });
+
+  document.querySelectorAll('[data-admin-delete-course]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const subjectId = button.getAttribute('data-admin-delete-course');
+      const course = subjects.find((item) => item._id === subjectId);
+      if (!subjectId || !course) return;
+      state.adminDialog = {
+        type: 'delete-course',
+        subjectId,
+        message: `Delete ${course.name}? It will be removed from student course assignments across this institution.`
+      };
+      void renderAdminDashboard();
+    });
+  });
+
+  const courseForm = document.getElementById('adminEditCourseDialogForm');
+  if (courseForm) {
+    courseForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const submitBtn = document.getElementById('adminDialogSubmitBtn');
+      const status = document.getElementById('adminDialogStatus');
+      if (!courseForm.reportValidity()) return;
+      await withButtonLoading(submitBtn, 'Saving...', async () => {
+        try {
+          const name = sanitizeValue(document.getElementById('adminDialogCourseName').value);
+          const courseDuration = sanitizeValue(
+            document.getElementById('adminDialogCourseDuration').value
+          );
+          if (name.length < 2) throw new Error('Course name must be at least 2 characters.');
+          if (courseDuration.length < 2) throw new Error('Course duration is required.');
+          await api(`/admin/subjects/${state.adminDialog.subjectId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ name, courseDuration })
+          });
+          state.adminDialog = null;
+          showToast('Course updated successfully.', 'success');
+          await renderAdminDashboard();
+        } catch (error) {
+          status.textContent = error.message;
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  }
+
+  const teacherForm = document.getElementById('adminEditTeacherDialogForm');
+  if (teacherForm) {
+    teacherForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const submitBtn = document.getElementById('adminDialogSubmitBtn');
+      const status = document.getElementById('adminDialogStatus');
+      if (!teacherForm.reportValidity()) return;
+      await withButtonLoading(submitBtn, 'Saving...', async () => {
+        try {
+          const fullName = sanitizeValue(document.getElementById('adminDialogTeacherFullName').value);
+          const username = sanitizeValue(
+            document.getElementById('adminDialogTeacherUsername').value
+          ).toLowerCase();
+          const email = String(document.getElementById('adminDialogTeacherEmail').value || '').trim();
+          const phone = String(document.getElementById('adminDialogTeacherPhone').value || '').trim();
+          if (fullName.length < 2) throw new Error('Full name must be at least 2 characters.');
+          if (username.length < 3) throw new Error('Username must be at least 3 characters.');
+          await api(`/admin/teachers/${state.adminDialog.teacherId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ fullName, username, email, phone })
+          });
+          state.adminDialog = null;
+          showToast('Teacher details updated.', 'success');
+          await renderAdminDashboard();
+        } catch (error) {
+          status.textContent = error.message;
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  }
+
+  const resetForm = document.getElementById('adminResetTeacherPasswordDialogForm');
+  if (resetForm) {
+    resetForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const submitBtn = document.getElementById('adminDialogSubmitBtn');
+      const status = document.getElementById('adminDialogStatus');
+      if (!resetForm.reportValidity()) return;
+      await withButtonLoading(submitBtn, 'Saving...', async () => {
+        try {
+          const password = String(
+            document.getElementById('adminDialogTeacherPassword').value || ''
+          ).trim();
+          if (password.length < 6) {
+            throw new Error('Temporary password must be at least 6 characters.');
+          }
+          const result = await api(`/admin/teachers/${state.adminDialog.teacherId}/reset-password`, {
+            method: 'POST',
+            body: JSON.stringify({ password })
+          });
+          const updatedUsername =
+            result?.data?.teacher?.username || state.adminDialog.username || '';
+          const updatedPassword = result?.data?.teacher?.temporaryPassword || password;
+          if (updatedUsername) {
+            state.adminTeacherSecrets[updatedUsername] = updatedPassword;
+          }
+          state.adminDialog = null;
+          showToast('Temporary password reset successfully.', 'success');
+          await renderAdminDashboard();
+        } catch (error) {
+          status.textContent = error.message;
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  }
+
+  const dangerBtn = document.getElementById('adminDialogDangerBtn');
+  if (dangerBtn) {
+    dangerBtn.addEventListener('click', async () => {
+      const status = document.getElementById('adminDialogStatus');
+      await withButtonLoading(dangerBtn, 'Deleting...', async () => {
+        try {
+          if (state.adminDialog?.type === 'delete-teacher') {
+            await api(`/admin/teachers/${state.adminDialog.teacherId}`, { method: 'DELETE' });
+            showToast('Teacher deleted.', 'success');
+          }
+          if (state.adminDialog?.type === 'delete-course') {
+            await api(`/admin/subjects/${state.adminDialog.subjectId}`, { method: 'DELETE' });
+            showToast('Course deleted.', 'success');
+          }
+          state.adminDialog = null;
+          await renderAdminDashboard();
+        } catch (error) {
+          status.textContent = error.message;
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  }
 }
 
 function sanitizeValue(value) {
@@ -2308,11 +2736,14 @@ async function renderAdminDashboard() {
         ${state.adminTab === 'accounts' ? accountSectionMarkup(user) : ''}
         <button class="cta-soft mini-qa-btn floating-qa-btn" id="runQaBtn">Run QA Check</button>
       </main>
+      ${adminDialogMarkup()}
+      ${appDialogMarkup()}
     </div>
   `;
 
   document.querySelectorAll('[data-admin-tab]').forEach((button) => {
     button.addEventListener('click', () => {
+      state.adminDialog = null;
       state.adminTab = button.getAttribute('data-admin-tab') || 'dashboard';
       closeOpenNavDropdowns();
       void renderAdminDashboard();
@@ -2516,114 +2947,6 @@ async function renderAdminDashboard() {
     });
   }
 
-  document.querySelectorAll('[data-admin-edit-course]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const subjectId = button.getAttribute('data-admin-edit-course');
-      if (!subjectId) return;
-      const course = subjects.find((item) => item._id === subjectId);
-      if (!course) return;
-
-      const nextName = prompt('Course name', course.name || '');
-      if (nextName === null) return;
-      const cleanName = sanitizeValue(nextName);
-      if (cleanName.length < 2) {
-        showToast('Course name must be at least 2 characters.', 'error');
-        return;
-      }
-
-      const nextDuration = prompt('Course duration', course.courseDuration || '');
-      if (nextDuration === null) return;
-      const cleanDuration = sanitizeValue(nextDuration);
-      if (cleanDuration.length < 2) {
-        showToast('Course duration is required.', 'error');
-        return;
-      }
-
-      await withButtonLoading(button, 'Saving...', async () => {
-        try {
-          await api(`/admin/subjects/${subjectId}`, {
-            method: 'PATCH',
-            body: JSON.stringify({
-              name: cleanName,
-              courseDuration: cleanDuration
-            })
-          });
-          showToast('Course updated successfully.', 'success');
-          await renderAdminDashboard();
-        } catch (error) {
-          showToast(error.message, 'error');
-        }
-      });
-    });
-  });
-
-  document.querySelectorAll('[data-admin-delete-course]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const subjectId = button.getAttribute('data-admin-delete-course');
-      if (!subjectId) return;
-      if (
-        !confirm(
-          'Delete this course? It will be removed from student course assignments across this institution.'
-        )
-      ) {
-        return;
-      }
-
-      await withButtonLoading(button, 'Deleting...', async () => {
-        try {
-          await api(`/admin/subjects/${subjectId}`, { method: 'DELETE' });
-          showToast('Course deleted.', 'success');
-          await renderAdminDashboard();
-        } catch (error) {
-          showToast(error.message, 'error');
-        }
-      });
-    });
-  });
-
-  document.querySelectorAll('[data-edit-teacher]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const teacherId = button.getAttribute('data-edit-teacher');
-      if (!teacherId) return;
-      const teacher = teachers.find((item) => item._id === teacherId);
-      if (!teacher) return;
-
-      const nextFullName = prompt('Teacher full name', teacher.fullName || '');
-      if (nextFullName === null) return;
-      const fullName = sanitizeValue(nextFullName);
-      if (fullName.length < 2) {
-        showToast('Full name must be at least 2 characters.', 'error');
-        return;
-      }
-
-      const nextUsername = prompt('Teacher username', teacher.username || '');
-      if (nextUsername === null) return;
-      const username = sanitizeValue(nextUsername).toLowerCase();
-      if (username.length < 3) {
-        showToast('Username must be at least 3 characters.', 'error');
-        return;
-      }
-
-      const nextEmail = prompt('Teacher email (optional)', teacher.email || '') ?? '';
-      const email = String(nextEmail || '').trim();
-      const nextPhone = prompt('Teacher phone (optional)', teacher.phone || '') ?? '';
-      const phone = String(nextPhone || '').trim();
-
-      await withButtonLoading(button, 'Saving...', async () => {
-        try {
-          await api(`/admin/teachers/${teacherId}`, {
-            method: 'PATCH',
-            body: JSON.stringify({ fullName, username, email, phone })
-          });
-          showToast('Teacher details updated.', 'success');
-          await renderAdminDashboard();
-        } catch (error) {
-          showToast(error.message, 'error');
-        }
-      });
-    });
-  });
-
   const searchInput = document.getElementById('adminStudentSearch');
   if (searchInput) {
     searchInput.addEventListener('input', (event) => {
@@ -2668,63 +2991,6 @@ async function renderAdminDashboard() {
     });
   });
 
-  document.querySelectorAll('[data-reset-teacher-password]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const teacherId = button.getAttribute('data-reset-teacher-password');
-      const teacherUsername = button.getAttribute('data-reset-teacher-username') || 'this teacher';
-      if (!teacherId) return;
-
-      const input = prompt(
-        `Set a new temporary password for ${teacherUsername}`,
-        generateTempPassword()
-      );
-      if (input === null) return;
-      const password = String(input || '').trim();
-      if (password.length < 6) {
-        showToast('Temporary password must be at least 6 characters.', 'error');
-        return;
-      }
-
-      await withButtonLoading(button, 'Saving...', async () => {
-        try {
-          const result = await api(`/admin/teachers/${teacherId}/reset-password`, {
-            method: 'POST',
-            body: JSON.stringify({ password })
-          });
-          const updatedUsername =
-            result?.data?.teacher?.username ||
-            (teacherUsername !== 'this teacher' ? teacherUsername : '');
-          const updatedPassword = result?.data?.teacher?.temporaryPassword || password;
-          if (updatedUsername) state.adminTeacherSecrets[updatedUsername] = updatedPassword;
-          showToast('Temporary password reset successfully.', 'success');
-          await renderAdminDashboard();
-        } catch (error) {
-          showToast(error.message, 'error');
-        }
-      });
-    });
-  });
-
-  document.querySelectorAll('[data-delete-teacher]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const teacherId = button.getAttribute('data-delete-teacher');
-      if (!teacherId) return;
-      if (!confirm('Delete this teacher account? This teacher will no longer be able to login.')) {
-        return;
-      }
-
-      await withButtonLoading(button, 'Deleting...', async () => {
-        try {
-          await api(`/admin/teachers/${teacherId}`, { method: 'DELETE' });
-          showToast('Teacher deleted.', 'success');
-          await renderAdminDashboard();
-        } catch (error) {
-          showToast(error.message, 'error');
-        }
-      });
-    });
-  });
-
   const exportTeacherCredsCsvBtn = document.getElementById('exportTeacherCredsCsvBtn');
   if (exportTeacherCredsCsvBtn) {
     exportTeacherCredsCsvBtn.addEventListener('click', () => {
@@ -2753,6 +3019,8 @@ async function renderAdminDashboard() {
     });
   }
 
+  bindAdminDialogHandlers({ teachers, subjects, getTeacherTempPassword });
+  enhanceResponsiveTables(app);
   bindAccountPasswordForm();
   endNavTransition();
 }
@@ -3153,7 +3421,15 @@ async function renderTeacherDashboard() {
                                           : ''
                                       }
                                     </td>
-                                    <td><button class="mini-btn danger" data-delete-student="${student._id}">Delete</button></td>
+                                    <td>
+                                      <button
+                                        class="mini-btn danger"
+                                        data-delete-student="${student._id}"
+                                        data-delete-student-name="${escapeHtml(student.fullName || student.username)}"
+                                      >
+                                        Delete
+                                      </button>
+                                    </td>
                                   </tr>
                                 `;
                               })
@@ -3285,7 +3561,15 @@ async function renderTeacherDashboard() {
                                           : '-'
                                       }
                                     </td>
-                                    <td><button class="mini-btn danger" data-delete-class-plan="${plan.id}">Delete</button></td>
+                                    <td>
+                                      <button
+                                        class="mini-btn danger"
+                                        data-delete-class-plan="${plan.id}"
+                                        data-delete-class-plan-title="${escapeHtml(plan.title || 'this class plan')}"
+                                      >
+                                        Delete
+                                      </button>
+                                    </td>
                                   </tr>
                                 `
                               )
@@ -3421,7 +3705,15 @@ async function renderTeacherDashboard() {
                                       }
                                     </td>
                                     <td>${formatDate(resource.createdAt)}</td>
-                                    <td><button class="mini-btn danger" data-delete-resource="${resource._id}">Delete</button></td>
+                                    <td>
+                                      <button
+                                        class="mini-btn danger"
+                                        data-delete-resource="${resource._id}"
+                                        data-delete-resource-title="${escapeHtml(resource.title || 'this resource')}"
+                                      >
+                                        Delete
+                                      </button>
+                                    </td>
                                   </tr>
                                 `
                               )
@@ -4046,6 +4338,7 @@ async function renderTeacherDashboard() {
           `
           : ''
       }
+      ${appDialogMarkup()}
     </div>
   `;
 
@@ -4057,6 +4350,7 @@ async function renderTeacherDashboard() {
     });
   });
   bindNavDropdowns();
+  bindAppDialogHandlers();
 
   document.getElementById('logoutBtn').addEventListener('click', logout);
 
@@ -4180,20 +4474,19 @@ async function renderTeacherDashboard() {
   }
 
   document.querySelectorAll('[data-delete-student]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      if (!confirm('Delete this student account?')) return;
+    button.addEventListener('click', () => {
       const studentId = button.getAttribute('data-delete-student');
+      const studentName = button.getAttribute('data-delete-student-name') || 'this student';
       if (!studentId) return;
-
-      await withButtonLoading(button, 'Deleting...', async () => {
-        try {
-          await api(`/teacher/students/${studentId}`, { method: 'DELETE' });
-          showToast('Student deleted.', 'success');
-          void renderTeacherDashboard();
-        } catch (error) {
-          showToast(error.message, 'error');
-        }
-      });
+      state.appDialog = {
+        type: 'delete-student',
+        studentId,
+        title: 'Delete Student',
+        message: `Delete ${studentName}? This account will no longer be able to sign in.`,
+        confirmLabel: 'Delete Student',
+        loadingLabel: 'Deleting...'
+      };
+      void renderTeacherDashboard();
     });
   });
 
@@ -4312,20 +4605,19 @@ async function renderTeacherDashboard() {
   }
 
   document.querySelectorAll('[data-delete-class-plan]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      if (!confirm('Delete this class plan?')) return;
+    button.addEventListener('click', () => {
       const planId = button.getAttribute('data-delete-class-plan');
+      const planTitle = button.getAttribute('data-delete-class-plan-title') || 'this class plan';
       if (!planId) return;
-
-      await withButtonLoading(button, 'Deleting...', async () => {
-        try {
-          await api(`/teacher/class-plans/${planId}`, { method: 'DELETE' });
-          showToast('Class plan deleted.', 'success');
-          void renderTeacherDashboard();
-        } catch (error) {
-          showToast(error.message, 'error');
-        }
-      });
+      state.appDialog = {
+        type: 'delete-class-plan',
+        planId,
+        title: 'Delete Class Plan',
+        message: `Delete ${planTitle}? Students will no longer see it in today’s class schedule.`,
+        confirmLabel: 'Delete Class Plan',
+        loadingLabel: 'Deleting...'
+      };
+      void renderTeacherDashboard();
     });
   });
 
@@ -4442,20 +4734,19 @@ async function renderTeacherDashboard() {
   }
 
   document.querySelectorAll('[data-delete-resource]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      if (!confirm('Delete this resource?')) return;
+    button.addEventListener('click', () => {
       const resourceId = button.getAttribute('data-delete-resource');
+      const resourceTitle = button.getAttribute('data-delete-resource-title') || 'this resource';
       if (!resourceId) return;
-
-      await withButtonLoading(button, 'Deleting...', async () => {
-        try {
-          await api(`/teacher/resources/${resourceId}`, { method: 'DELETE' });
-          showToast('Resource deleted.', 'success');
-          void renderTeacherDashboard();
-        } catch (error) {
-          showToast(error.message, 'error');
-        }
-      });
+      state.appDialog = {
+        type: 'delete-resource',
+        resourceId,
+        title: 'Delete Resource',
+        message: `Delete ${resourceTitle}? Students will lose access to this file or link.`,
+        confirmLabel: 'Delete Resource',
+        loadingLabel: 'Deleting...'
+      };
+      void renderTeacherDashboard();
     });
   });
 
@@ -5138,6 +5429,7 @@ async function renderTeacherDashboard() {
     });
   });
 
+  enhanceResponsiveTables(app);
   bindAccountPasswordForm();
   endNavTransition();
 }
@@ -6330,6 +6622,7 @@ async function renderStudentDashboard() {
     });
   });
 
+  enhanceResponsiveTables(app);
   bindAccountPasswordForm();
   endNavTransition();
 }
