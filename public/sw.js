@@ -1,10 +1,10 @@
-const CACHE_NAME = 'lift-portal-cache-v6';
+const CACHE_NAME = 'lift-portal-cache-v7';
 const APP_SHELL = [
   '/',
   '/index.html',
-  '/styles.css?v=20260310-ocr1',
-  '/live.css?v=20260310-ocr1',
-  '/live.js?v=20260310-ocr1',
+  '/styles.css?v=20260315-ui1',
+  '/live.css?v=20260315-ui1',
+  '/live.js?v=20260315-ui1',
   '/favicon.ico',
   '/manifest.webmanifest',
   '/icons/app-icon-192.png?v=2',

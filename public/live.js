@@ -1703,6 +1703,7 @@ function renderWelcome() {
       <div class="hero-overlay"></div>
       <div class="hero-content">
         <header class="hero-header">${logoMarkup()}</header>
+        <div class="hero-badge">Built for modern classrooms</div>
 
         <h1 class="hero-title">
           Learn Smarter,<br />
