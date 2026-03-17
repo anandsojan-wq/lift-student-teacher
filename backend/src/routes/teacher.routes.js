@@ -18,6 +18,7 @@ import {
   teacherViewResource
 } from '../controllers/resource.controller.js';
 import {
+  teacherDeleteTest,
   teacherGradeAttempt,
   teacherLiveTestsStats,
   teacherListAssessments,
@@ -45,6 +46,7 @@ router.delete('/resources/:resourceId', teacherDeleteResource);
 router.get('/tests', teacherListTests);
 router.get('/tests/live-stats', teacherLiveTestsStats);
 router.post('/tests', teacherCreateTest);
+router.delete('/tests/:testId', teacherDeleteTest);
 router.get('/assessments', teacherListAssessments);
 router.patch('/assessments/:attemptId/grade', teacherGradeAttempt);
 router.get('/class-plans', teacherListClassPlans);

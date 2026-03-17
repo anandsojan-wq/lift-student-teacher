@@ -117,6 +117,19 @@ function teacherResourceViewUrl(resourceId) {
   return `/api/teacher/resources/${resourceId}/view`;
 }
 
+function resolvePlanEndDateTime(plan) {
+  const baseDate = plan?.scheduledDate ? new Date(plan.scheduledDate) : null;
+  const endTime = String(plan?.endTime || '').trim();
+  if (!baseDate || Number.isNaN(baseDate.getTime()) || !endTime) return null;
+
+  const [hours, minutes] = endTime.split(':').map((part) => Number(part));
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+
+  const endAt = new Date(baseDate);
+  endAt.setHours(hours, minutes, 0, 0);
+  return Number.isNaN(endAt.getTime()) ? null : endAt;
+}
+
 export async function teacherCreateClassPlan(req, res) {
   const parsed = createClassPlanSchema.safeParse(req.body || {});
   if (!parsed.success) {
@@ -290,12 +303,22 @@ export async function studentTodayClasses(req, res) {
   return ok(res, {
     classes: plans.map((plan) => {
       const serialized = serializePlan(plan, { subjectMap, teacherMap, resourceMap });
-      if (serialized.resource && isStudentProtectedDocument(serialized.resource)) {
-        serialized.resource = {
-          ...serialized.resource,
-          value: '',
-          viewUrl: `/api/student/resources/${String(serialized.resource.id || serialized.resource._id || '')}/view`
-        };
+      const endAt = resolvePlanEndDateTime(plan);
+      const resourceVisible = !endAt || endAt.getTime() >= now.getTime();
+
+      if (serialized.resource) {
+        if (resourceVisible && isStudentProtectedDocument(serialized.resource)) {
+          serialized.resource = {
+            ...serialized.resource,
+            value: '',
+            viewUrl: `/api/student/resources/${String(serialized.resource.id || serialized.resource._id || '')}/view`
+          };
+        }
+
+        serialized.resourceAvailable = resourceVisible;
+        if (!resourceVisible) {
+          serialized.resource = null;
+        }
       }
       return serialized;
     })

@@ -275,6 +275,25 @@ export async function teacherListTests(req, res) {
   return ok(res, { tests });
 }
 
+export async function teacherDeleteTest(req, res) {
+  const test = await Test.findOne({
+    _id: req.params.testId,
+    institutionId: req.auth.institutionId,
+    teacherId: req.auth.userId
+  });
+
+  if (!test) return notFound(res, 'Test not found.');
+
+  await Attempt.deleteMany({
+    institutionId: req.auth.institutionId,
+    teacherId: req.auth.userId,
+    testId: test._id
+  });
+  await test.deleteOne();
+
+  return ok(res, {}, 'Test deleted.');
+}
+
 export async function teacherListAssessments(req, res) {
   const subjectId = String(req.query.subjectId || '').trim();
   const type = String(req.query.type || '').trim();

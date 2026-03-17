@@ -558,6 +558,14 @@ function bindAppDialogHandlers() {
           showToast('Resource deleted.', 'success');
         }
 
+        if (dialog.type === 'delete-test') {
+          await api(`/teacher/tests/${dialog.testId}`, { method: 'DELETE' });
+          if (state.teacherViewedTestId === dialog.testId) {
+            state.teacherViewedTestId = '';
+          }
+          showToast('Test deleted.', 'success');
+        }
+
         closeAppDialog(false);
         rerenderActiveRoleDashboard();
       } catch (error) {
@@ -3962,6 +3970,7 @@ async function renderTeacherDashboard() {
                         <th>Created</th>
                         <th>View Test</th>
                         <th>Edit & Re-conduct</th>
+                        <th>Delete</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3993,11 +4002,20 @@ async function renderTeacherDashboard() {
                                           : '<span class="muted">MCQ only</span>'
                                       }
                                     </td>
+                                    <td>
+                                      <button
+                                        class="mini-btn danger"
+                                        data-delete-test="${test._id}"
+                                        data-delete-test-title="${escapeHtml(test.title || 'this test')}"
+                                      >
+                                        Delete
+                                      </button>
+                                    </td>
                                   </tr>
                                 `
                               )
                               .join('')
-                          : '<tr><td colspan="8">No tests published.</td></tr>'
+                          : '<tr><td colspan="9">No tests published.</td></tr>'
                       }
                     </tbody>
                   </table>
@@ -4791,6 +4809,23 @@ async function renderTeacherDashboard() {
         title: 'Delete Resource',
         message: `Delete ${resourceTitle}? Students will lose access to this file or link.`,
         confirmLabel: 'Delete Resource',
+        loadingLabel: 'Deleting...'
+      };
+      void renderTeacherDashboard();
+    });
+  });
+
+  document.querySelectorAll('[data-delete-test]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const testId = button.getAttribute('data-delete-test');
+      const testTitle = button.getAttribute('data-delete-test-title') || 'this test';
+      if (!testId) return;
+      state.appDialog = {
+        type: 'delete-test',
+        testId,
+        title: 'Delete Test',
+        message: `Delete ${testTitle}? Students will lose access to this test and all related submissions will be removed.`,
+        confirmLabel: 'Delete Test',
         loadingLabel: 'Deleting...'
       };
       void renderTeacherDashboard();
@@ -6218,6 +6253,8 @@ async function renderStudentDashboard() {
                               ${
                                 item.resource
                                   ? studentClassResourceMarkup(item.resource)
+                                  : item.resourceAvailable === false
+                                    ? '<p class="muted">Class resource is no longer available after the end time.</p>'
                                   : ''
                               }
                             </article>
