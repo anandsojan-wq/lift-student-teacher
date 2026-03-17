@@ -74,6 +74,7 @@ const state = {
   teacherAssessmentType: '',
   teacherAssessmentStatus: 'pending',
   teacherAssessmentQuery: '',
+  teacherPdfViewer: null,
   studentResourceSearch: '',
   studentResourceType: '',
   studentResourceSubjectId: '',
@@ -250,6 +251,7 @@ function resetUiStateOnLogout() {
   state.teacherAssessmentType = '';
   state.teacherAssessmentStatus = 'pending';
   state.teacherAssessmentQuery = '';
+  state.teacherPdfViewer = null;
   state.studentResourceSearch = '';
   state.studentResourceType = '';
   state.studentResourceSubjectId = '';
@@ -3275,8 +3277,18 @@ async function renderTeacherDashboard() {
                                   <tr>
                                     <td>${escapeHtml(subject.name)}</td>
                                     <td>${
-                                      subject.syllabusPdfUrl
-                                        ? `<a href="${escapeHtml(subject.syllabusPdfUrl)}" target="_blank" rel="noreferrer">Open Syllabus</a>`
+                                      subject.syllabusViewUrl
+                                        ? `
+                                          <button
+                                            type="button"
+                                            class="mini-btn"
+                                            data-open-teacher-pdf="1"
+                                            data-pdf-url="${escapeHtml(subject.syllabusViewUrl)}"
+                                            data-pdf-title="${escapeHtml(subject.name || 'Syllabus')}"
+                                          >
+                                            View File
+                                          </button>
+                                        `
                                         : '-'
                                     }</td>
                                     <td>${formatDate(subject.updatedAt || subject.createdAt)}</td>
@@ -3557,7 +3569,7 @@ async function renderTeacherDashboard() {
                                     <td>
                                       ${
                                         plan.resource
-                                          ? `<a href="${escapeHtml(plan.resource.value)}" target="_blank" rel="noreferrer">Open</a>`
+                                          ? teacherResourceActionMarkup(plan.resource)
                                           : '-'
                                       }
                                     </td>
@@ -3698,11 +3710,7 @@ async function renderTeacherDashboard() {
                                     <td>${escapeHtml(resource.title)}</td>
                                     <td>${escapeHtml(resource.resourceType.toUpperCase())}</td>
                                     <td>
-                                      ${
-                                        resource.source === 'file'
-                                          ? `<a href="${escapeHtml(resource.value)}" target="_blank" rel="noreferrer">Open</a>`
-                                          : `<a href="${escapeHtml(resource.value)}" target="_blank" rel="noreferrer">Open</a>`
-                                      }
+                                      ${teacherResourceActionMarkup(resource)}
                                     </td>
                                     <td>${formatDate(resource.createdAt)}</td>
                                     <td>
@@ -4338,6 +4346,24 @@ async function renderTeacherDashboard() {
           `
           : ''
       }
+      ${
+        state.teacherPdfViewer
+          ? `
+            <div class="test-modal-backdrop" data-close-teacher-pdf></div>
+            <section class="test-modal" role="dialog" aria-modal="true" aria-label="Teacher PDF Viewer">
+              <div class="test-modal-card">
+                <div class="progress-row">
+                  <h3>${escapeHtml(state.teacherPdfViewer.title || 'PDF Viewer')}</h3>
+                  <button class="mini-btn" type="button" data-close-teacher-pdf>Close</button>
+                </div>
+                <p class="muted">Protected view mode enabled. Download is disabled in this interface.</p>
+                <p class="muted" id="teacherPdfStatus">Loading PDF...</p>
+                <div class="pdf-viewer resource-pdf-viewer student-pdf-canvas-root" id="teacherPdfCanvasRoot"></div>
+              </div>
+            </section>
+          `
+          : ''
+      }
       ${appDialogMarkup()}
     </div>
   `;
@@ -4352,7 +4378,28 @@ async function renderTeacherDashboard() {
   bindNavDropdowns();
   bindAppDialogHandlers();
 
+  document.querySelectorAll('[data-open-teacher-pdf]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const url = button.getAttribute('data-pdf-url') || '';
+      const title = button.getAttribute('data-pdf-title') || 'PDF Viewer';
+      if (!url) return;
+      state.teacherPdfViewer = { url, title };
+      void renderTeacherDashboard();
+    });
+  });
+
+  document.querySelectorAll('[data-close-teacher-pdf]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.teacherPdfViewer = null;
+      void renderTeacherDashboard();
+    });
+  });
+
   document.getElementById('logoutBtn').addEventListener('click', logout);
+
+  if (state.teacherPdfViewer?.url) {
+    void renderProtectedPdfInto(state.teacherPdfViewer.url, 'teacherPdfCanvasRoot', 'teacherPdfStatus');
+  }
 
   const runQaBtn = document.getElementById('runQaBtn');
   if (runQaBtn) {
@@ -5793,6 +5840,31 @@ function studentResourceActionMarkup(resource) {
         data-open-student-pdf="1"
         data-pdf-url="${escapeHtml(resource.viewUrl)}"
         data-pdf-title="${escapeHtml(resource.title || 'PDF Resource')}"
+      >
+        View File
+      </button>
+    `;
+  }
+
+  if (!resource.value) return '<span class="muted">No file</span>';
+  return `<a href="${escapeHtml(resource.value)}" target="_blank" rel="noreferrer">Open Link</a>`;
+}
+
+function isTeacherPdfResource(resource) {
+  const type = String(resource?.resourceType || '').toLowerCase();
+  return type === 'pdf' || type === 'ebook';
+}
+
+function teacherResourceActionMarkup(resource) {
+  if (!resource) return '<span class="muted">No file</span>';
+  if (isTeacherPdfResource(resource) && resource.viewUrl) {
+    return `
+      <button
+        type="button"
+        class="mini-btn"
+        data-open-teacher-pdf="1"
+        data-pdf-url="${escapeHtml(resource.viewUrl)}"
+        data-pdf-title="${escapeHtml(resource.title || 'Teacher Resource')}"
       >
         View File
       </button>

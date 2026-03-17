@@ -87,6 +87,13 @@ test.describe('portal shell smoke', () => {
 
     await page.getByRole('button', { name: 'Upload Resources' }).click();
     await expect(page.getByRole('heading', { name: 'Resource Library' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'View File' }).first()).toBeVisible();
+    await page.getByRole('button', { name: 'View File' }).first().click();
+    await expect(page.getByRole('dialog', { name: 'Teacher PDF Viewer' })).toBeVisible();
+    await expect(page.getByText('Protected view mode enabled. Download is disabled in this interface.')).toBeVisible();
+    await page.getByRole('button', { name: 'Close' }).click();
+    await expect(page.getByRole('dialog', { name: 'Teacher PDF Viewer' })).toHaveCount(0);
+
     await page.getByRole('button', { name: 'Delete' }).first().click();
     await expect(page.getByRole('dialog', { name: 'Delete Resource' })).toBeVisible();
     await page.getByRole('button', { name: 'Cancel' }).click();

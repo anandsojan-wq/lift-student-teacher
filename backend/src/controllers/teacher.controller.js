@@ -4,6 +4,7 @@ import { Subject } from '../models/Subject.js';
 import { User } from '../models/User.js';
 import { trackAnalyticsEvent } from '../services/analytics.service.js';
 import { triggerAutomation } from '../services/automation.service.js';
+import { resolveInlineAsset, sendInlineAsset } from '../utils/protected-file.js';
 import { badRequest, notFound, ok } from '../utils/http.js';
 
 const createStudentSchema = z.object({
@@ -24,7 +25,40 @@ export async function listMySubjects(req, res) {
     .sort({ name: 1, createdAt: -1 })
     .lean();
 
-  return ok(res, { subjects });
+  return ok(res, {
+    subjects: subjects.map((subject) => ({
+      ...subject,
+      syllabusPdfUrl: '',
+      syllabusViewUrl: subject.syllabusPdfUrl
+        ? `/api/teacher/subjects/${subject._id}/syllabus/view`
+        : ''
+    }))
+  });
+}
+
+export async function teacherViewSyllabus(req, res) {
+  const subject = await Subject.findOne({
+    _id: req.params.subjectId,
+    institutionId: req.auth.institutionId
+  })
+    .select('name syllabusPdfUrl syllabusPdfName')
+    .lean();
+
+  if (!subject?.syllabusPdfUrl) {
+    return notFound(res, 'Syllabus not found.');
+  }
+
+  try {
+    const asset = await resolveInlineAsset({
+      sourceUrl: subject.syllabusPdfUrl,
+      fallbackFileName:
+        subject.syllabusPdfName || `${String(subject.name || 'syllabus').trim() || 'syllabus'}.pdf`,
+      fallbackContentType: 'application/pdf'
+    });
+    return sendInlineAsset(res, asset);
+  } catch (error) {
+    return badRequest(res, 'Unable to open this syllabus right now.');
+  }
 }
 
 export async function createStudent(req, res) {

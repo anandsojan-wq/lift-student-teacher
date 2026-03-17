@@ -83,6 +83,10 @@ function studentResourceViewUrl(resourceId) {
   return `/api/student/resources/${resourceId}/view`;
 }
 
+function teacherResourceViewUrl(resourceId) {
+  return `/api/teacher/resources/${resourceId}/view`;
+}
+
 function buildProtectedResourceFileName(resource) {
   const title = String(resource?.title || 'resource').trim() || 'resource';
   const ext = String(resource?.resourceType || '').toLowerCase() === 'ebook' ? '.epub' : '.pdf';
@@ -159,7 +163,16 @@ export async function teacherListResources(req, res) {
   if (search) Object.assign(query, search);
 
   const resources = await Resource.find(query).sort({ createdAt: -1 }).lean();
-  return ok(res, { resources });
+  const enriched = resources.map((resource) => ({
+    ...resource,
+    ...(isStudentProtectedDocument(resource)
+      ? {
+          value: '',
+          viewUrl: teacherResourceViewUrl(resource._id)
+        }
+      : {})
+  }));
+  return ok(res, { resources: enriched });
 }
 
 export async function teacherDeleteResource(req, res) {
@@ -172,6 +185,34 @@ export async function teacherDeleteResource(req, res) {
 
   await resource.deleteOne();
   return ok(res, {}, 'Resource deleted.');
+}
+
+export async function teacherViewResource(req, res) {
+  const resource = await Resource.findOne({
+    _id: req.params.resourceId,
+    institutionId: req.auth.institutionId,
+    teacherId: req.auth.userId
+  })
+    .select('title resourceType value source')
+    .lean();
+
+  if (!resource || !isStudentProtectedDocument(resource)) {
+    return notFound(res, 'Resource not found.');
+  }
+
+  try {
+    const asset = await resolveInlineAsset({
+      sourceUrl: resource.value,
+      fallbackFileName: buildProtectedResourceFileName(resource),
+      fallbackContentType:
+        String(resource.resourceType || '').toLowerCase() === 'ebook'
+          ? 'application/epub+zip'
+          : 'application/pdf'
+    });
+    return sendInlineAsset(res, asset);
+  } catch (error) {
+    return badRequest(res, 'Unable to open this resource right now.');
+  }
 }
 
 export async function studentListResources(req, res) {
