@@ -6000,6 +6000,51 @@ function levelProgressPercent(xp = 0) {
   return Math.round((remainder / 120) * 100);
 }
 
+function resolveStudentClassEndAt(item) {
+  const baseDate = item?.scheduledDate ? new Date(item.scheduledDate) : new Date();
+  const endTime = String(item?.endTime || '').trim();
+  if (!endTime || Number.isNaN(baseDate.getTime())) return null;
+  const [hours, minutes] = endTime.split(':').map((part) => Number(part));
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  const endAt = new Date(baseDate);
+  endAt.setHours(hours, minutes, 0, 0);
+  return Number.isNaN(endAt.getTime()) ? null : endAt;
+}
+
+function splitStudentClassesByStatus(classes) {
+  const now = new Date();
+  return (classes || []).reduce(
+    (groups, item) => {
+      const endAt = resolveStudentClassEndAt(item);
+      if (endAt && endAt.getTime() < now.getTime()) {
+        groups.completed.push(item);
+      } else {
+        groups.active.push(item);
+      }
+      return groups;
+    },
+    { active: [], completed: [] }
+  );
+}
+
+function studentClassCardMarkup(item) {
+  return `
+    <article class="stack-item">
+      <p><strong>${escapeHtml(item.title || 'Class')}</strong></p>
+      <p class="muted">${escapeHtml(item.subjectName || '-')} | ${escapeHtml(item.startTime || '--:--')} - ${escapeHtml(item.endTime || '--:--')}</p>
+      <p class="muted">Teacher: ${escapeHtml(item.teacherName || '-')}</p>
+      ${item.description ? `<p>${escapeHtml(item.description)}</p>` : ''}
+      ${
+        item.resource
+          ? studentClassResourceMarkup(item.resource)
+          : item.resourceAvailable === false
+            ? '<p class="muted">Class resource is no longer available after the end time.</p>'
+            : ''
+      }
+    </article>
+  `;
+}
+
 async function renderStudentDashboard() {
   clearAttemptTimer();
   beginNavTransition();
@@ -6031,6 +6076,7 @@ async function renderStudentDashboard() {
   const todayTests = queueResult.data.today || [];
   const pendingTests = queueResult.data.pending || [];
   const todayClasses = todayClassesResult.data.classes || [];
+  const studentClasses = splitStudentClassesByStatus(todayClasses);
 
   const subjects = dashboard.subjects || [];
   const allowedStudentTabs = new Set([
@@ -6114,7 +6160,11 @@ async function renderStudentDashboard() {
 
                 <article class="panel">
                   <h3>Today's Classes</h3>
-                  <p class="headline">${todayClasses.length ? `${todayClasses.length} classes planned` : 'No classes planned today'}</p>
+                  <p class="headline">${
+                    studentClasses.active.length
+                      ? `${studentClasses.active.length} active class${studentClasses.active.length === 1 ? '' : 'es'}`
+                      : 'No active classes right now'
+                  }</p>
                   <p class="muted">Check class schedule and attached resources.</p>
                   <button class="cta-soft" data-student-nav="classes">Open Class Schedule</button>
                 </article>
@@ -6239,29 +6289,28 @@ async function renderStudentDashboard() {
           state.studentTab === 'classes'
             ? `
               <section class="panel">
-                <h3>Today's Classes</h3>
+                <h3>Active & Upcoming Classes</h3>
                 ${
-                  todayClasses.length
-                    ? todayClasses
+                  studentClasses.active.length
+                    ? studentClasses.active
                         .map(
-                          (item) => `
-                            <article class="stack-item">
-                              <p><strong>${escapeHtml(item.title || 'Class')}</strong></p>
-                              <p class="muted">${escapeHtml(item.subjectName || '-')} | ${escapeHtml(item.startTime || '--:--')} - ${escapeHtml(item.endTime || '--:--')}</p>
-                              <p class="muted">Teacher: ${escapeHtml(item.teacherName || '-')}</p>
-                              ${item.description ? `<p>${escapeHtml(item.description)}</p>` : ''}
-                              ${
-                                item.resource
-                                  ? studentClassResourceMarkup(item.resource)
-                                  : item.resourceAvailable === false
-                                    ? '<p class="muted">Class resource is no longer available after the end time.</p>'
-                                  : ''
-                              }
-                            </article>
-                          `
+                          (item) => studentClassCardMarkup(item)
                         )
                         .join('')
-                    : '<p class="muted">No classes scheduled for today.</p>'
+                    : '<p class="muted">No active or upcoming classes for today.</p>'
+                }
+              </section>
+
+              <section class="panel">
+                <h3>Completed Classes</h3>
+                ${
+                  studentClasses.completed.length
+                    ? studentClasses.completed
+                        .map(
+                          (item) => studentClassCardMarkup(item)
+                        )
+                        .join('')
+                    : '<p class="muted">No completed classes yet for today.</p>'
                 }
               </section>
             `

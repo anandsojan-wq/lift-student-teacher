@@ -171,10 +171,11 @@ test.describe('portal shell smoke', () => {
     await expect(page.locator('[data-student-tab="dashboard"]')).toBeVisible({ timeout: 30000 });
     await page.getByText('Learning', { exact: true }).click();
     await page.locator('[data-student-tab="classes"]:visible').click();
-    await expect(page.getByRole('heading', { name: "Today's Classes" })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Completed Classes' })).toBeVisible();
 
     const endedClass = page.locator('article.stack-item', { hasText: classTitle }).first();
     await expect(endedClass).toBeVisible();
+    await expect(page.locator('section.panel', { has: page.getByRole('heading', { name: 'Completed Classes' }) }).getByText(classTitle)).toBeVisible();
     await expect(endedClass.getByText('Class resource is no longer available after the end time.')).toBeVisible();
     await expect(endedClass.getByRole('link', { name: 'Open Link' })).toHaveCount(0);
     await expect(endedClass.getByRole('button', { name: 'View File' })).toHaveCount(0);
