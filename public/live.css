@@ -445,7 +445,197 @@ select:focus {
   padding-inline: 18px;
 }
 
+.three-grid-form {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.meta-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.meta-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(184, 214, 239, 0.92);
+  background: linear-gradient(180deg, rgba(248, 252, 255, 0.98) 0%, rgba(238, 246, 255, 0.98) 100%);
+  color: #2d6189;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.published-tests-toolbar {
+  margin-bottom: 12px;
+}
+
+.table-action-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.actions-cell {
+  min-width: 280px;
+}
+
+.status-badge.neutral {
+  color: #4f6478;
+  background: #eef4fa;
+  border-color: #d2e0ec;
+}
+
+.status-badge.warn {
+  color: #924b16;
+  background: #fff0e4;
+  border-color: #f5c9a8;
+}
+
+.admin-guidance-grid {
+  align-items: start;
+}
+
+.admin-mini-stats {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.admin-action-card,
+.course-attention-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.admin-action-card-ok {
+  background: linear-gradient(180deg, rgba(248, 255, 251, 0.98) 0%, rgba(240, 251, 246, 0.98) 100%);
+}
+
+.admin-action-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #47b0fb 0%, #2480d1 54%, #155dae 100%);
+  color: #fff;
+  font-size: 0.88rem;
+  font-weight: 800;
+  box-shadow: 0 10px 18px rgba(22, 98, 163, 0.18);
+}
+
+.dashboard-loading-shell .main-nav {
+  pointer-events: none;
+}
+
+.loading-hero-panel {
+  padding-top: 24px;
+}
+
+.loading-shell-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(184, 214, 239, 0.92);
+  background: rgba(244, 250, 255, 0.96);
+  color: #2c6b9b;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.loading-shell-badge::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #2f97ee;
+  box-shadow: 0 0 0 6px rgba(74, 164, 236, 0.16);
+  animation: loadingPulse 1.3s ease-in-out infinite;
+}
+
+.loading-shell-grid {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.skeleton-block,
+.skeleton-lines-panel {
+  position: relative;
+  overflow: hidden;
+  min-height: 124px;
+}
+
+.skeleton-line {
+  position: relative;
+  overflow: hidden;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(200, 221, 240, 0.44);
+  margin-top: 12px;
+}
+
+.skeleton-line.wide {
+  width: min(540px, 100%);
+}
+
+.skeleton-line.short {
+  width: 48%;
+}
+
+.skeleton-block::after,
+.skeleton-line::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.72) 45%, transparent 100%);
+  transform: translateX(-100%);
+  animation: loadingSweep 1.2s ease-in-out infinite;
+}
+
+.skeleton-lines-panel {
+  margin-top: 18px;
+  padding: 20px;
+}
+
+.view-switching .dashboard-shell {
+  opacity: 0.96;
+  transform: translateY(2px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+@keyframes loadingSweep {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes loadingPulse {
+  50% {
+    opacity: 0.45;
+    transform: scale(0.92);
+  }
+}
+
 @media (max-width: 980px) {
+  .three-grid-form,
+  .loading-shell-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .main-nav {
     width: min(100% - 16px, 1240px);
     margin-top: 10px;
@@ -463,6 +653,12 @@ select:focus {
 
 @media (max-width: 760px) {
   .live-welcome .hero-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .three-grid-form,
+  .loading-shell-grid,
+  .admin-mini-stats {
     grid-template-columns: 1fr;
   }
 
@@ -591,6 +787,10 @@ select:focus {
   .dialog-actions .cta-main,
   .dialog-actions .mini-btn {
     width: 100%;
+  }
+
+  .actions-cell {
+    min-width: 0;
   }
 }
 

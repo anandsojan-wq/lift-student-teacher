@@ -54,6 +54,10 @@ const state = {
   teacherResourceCreateType: 'pdf',
   teacherResourceSubjectId: '',
   teacherTestSubjectId: '',
+  teacherPublishedTestQuery: '',
+  teacherPublishedTestSubjectId: '',
+  teacherPublishedTestType: '',
+  teacherPublishedTestStatus: 'active',
   teacherTestType: 'mcq',
   teacherMcqQuestionCount: '',
   teacherMcqDurationMinutes: MCQ_DEFAULT_DURATION_MINUTES,
@@ -231,6 +235,10 @@ function resetUiStateOnLogout() {
   state.teacherResourceCreateType = 'pdf';
   state.teacherResourceSubjectId = '';
   state.teacherTestSubjectId = '';
+  state.teacherPublishedTestQuery = '';
+  state.teacherPublishedTestSubjectId = '';
+  state.teacherPublishedTestType = '';
+  state.teacherPublishedTestStatus = 'active';
   state.teacherTestType = 'mcq';
   state.teacherMcqQuestionCount = '';
   state.teacherMcqDurationMinutes = MCQ_DEFAULT_DURATION_MINUTES;
@@ -294,8 +302,9 @@ function cacheTtlForPath(path) {
   return 5_000;
 }
 
-function beginNavTransition() {
+function beginNavTransition(label = 'Loading workspace...') {
   if (!app) return;
+  app.dataset.loadingLabel = label;
   app.classList.add('view-switching');
   if (runtime.navTransitionTimerId) clearTimeout(runtime.navTransitionTimerId);
   runtime.navTransitionTimerId = setTimeout(() => {
@@ -308,6 +317,7 @@ function endNavTransition() {
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       app.classList.remove('view-switching');
+      delete app.dataset.loadingLabel;
     });
   });
 }
@@ -1001,7 +1011,7 @@ function combineDateAndTimeToIso(dateValue, timeValue) {
 }
 
 function formatTestType(type) {
-  const normalized = String(type || '').trim().toLowerCase();
+  const normalized = normalizeTestTypeValue(type);
   if (normalized === 'mcq') return 'MCQ';
   if (normalized === 'long') return 'UPLOAD QUESTIONS AS PDF';
   return normalized ? normalized.replace(/_/g, ' ').toUpperCase() : '-';
@@ -1237,6 +1247,227 @@ function studentNavMarkup(activeTab) {
 
     <button class="nav-tab ${activeTab === 'accounts' ? 'active' : ''}" data-student-tab="accounts">Accounts</button>
   `;
+}
+
+function normalizeTestTypeValue(type) {
+  const normalized = String(type || '').trim().toLowerCase();
+  if (!normalized) return '';
+  if (normalized === 'short' || normalized === 'pdf_upload') return 'long';
+  return normalized;
+}
+
+function renderWorkspaceLoading({ title, detail, navMarkup }) {
+  if (!app) return;
+
+  app.innerHTML = `
+    <div class="dashboard-shell dashboard-loading-shell">
+      <header class="main-nav">
+        <div class="left-nav">
+          ${logoMarkup(true)}
+          ${navMarkup}
+        </div>
+        <div class="top-actions">
+          <button class="signout" type="button" disabled>Loading...</button>
+        </div>
+      </header>
+
+      <main class="page container-xl">
+        <section class="panel loading-hero-panel">
+          <span class="loading-shell-badge">Syncing workspace</span>
+          <h2>${escapeHtml(title)}</h2>
+          <p class="subline">${escapeHtml(detail)}</p>
+          <div class="loading-shell-grid">
+            <article class="panel stat skeleton-block"></article>
+            <article class="panel stat skeleton-block"></article>
+            <article class="panel stat skeleton-block"></article>
+            <article class="panel stat skeleton-block"></article>
+          </div>
+          <article class="panel skeleton-lines-panel">
+            <div class="skeleton-line wide"></div>
+            <div class="skeleton-line"></div>
+            <div class="skeleton-line"></div>
+            <div class="skeleton-line short"></div>
+          </article>
+        </section>
+      </main>
+    </div>
+  `;
+}
+
+function getAdminLoadingCopy(activeTab) {
+  if (String(activeTab || '').startsWith('teachers_')) {
+    return {
+      title: 'Preparing teacher controls',
+      detail: 'Loading teacher accounts, passwords, and actions for this institution.'
+    };
+  }
+  if (String(activeTab || '').startsWith('courses_')) {
+    return {
+      title: 'Preparing course controls',
+      detail: 'Loading course details, syllabus records, and course actions.'
+    };
+  }
+  if (activeTab === 'students_view') {
+    return {
+      title: 'Preparing student overview',
+      detail: 'Loading enrolled students, filters, and contact details.'
+    };
+  }
+  if (activeTab === 'analytics') {
+    return {
+      title: 'Preparing analytics',
+      detail: 'Pulling the latest institution activity and funnel numbers.'
+    };
+  }
+  if (activeTab === 'accounts') {
+    return {
+      title: 'Preparing account settings',
+      detail: 'Loading account details and security controls.'
+    };
+  }
+  return {
+    title: 'Preparing admin dashboard',
+    detail: 'Loading today’s priorities, course health, and institution totals.'
+  };
+}
+
+function getTeacherLoadingCopy(activeTab) {
+  if (activeTab === 'students') {
+    return {
+      title: 'Preparing student management',
+      detail: 'Loading your student list, filters, and sharing tools.'
+    };
+  }
+  if (activeTab === 'class_planner') {
+    return {
+      title: 'Preparing class planner',
+      detail: 'Loading today’s classes, attachments, and schedule details.'
+    };
+  }
+  if (activeTab === 'resources') {
+    return {
+      title: 'Preparing resource library',
+      detail: 'Loading uploaded files, filters, and protected viewers.'
+    };
+  }
+  if (activeTab === 'assessment_results') {
+    return {
+      title: 'Preparing assessments',
+      detail: 'Loading live test monitoring and submitted student work.'
+    };
+  }
+  if (activeTab === 'accounts') {
+    return {
+      title: 'Preparing account settings',
+      detail: 'Loading profile and password settings.'
+    };
+  }
+  return {
+    title: 'Preparing teacher workspace',
+    detail: 'Loading your tests, class plans, and today’s teaching tools.'
+  };
+}
+
+function getStudentLoadingCopy(activeTab) {
+  if (activeTab === 'today' || activeTab === 'pending' || activeTab === 'history') {
+    return {
+      title: 'Preparing tests',
+      detail: 'Loading your queue, history, and available answer keys.'
+    };
+  }
+  if (activeTab === 'classes' || activeTab === 'resources' || activeTab === 'syllabus') {
+    return {
+      title: 'Preparing learning space',
+      detail: 'Loading your class schedule, resources, and syllabus viewer.'
+    };
+  }
+  if (activeTab === 'planner') {
+    return {
+      title: 'Preparing study planner',
+      detail: 'Loading your personal study to-do list.'
+    };
+  }
+  if (activeTab === 'accounts') {
+    return {
+      title: 'Preparing account settings',
+      detail: 'Loading your profile and password settings.'
+    };
+  }
+  return {
+    title: 'Preparing student dashboard',
+    detail: 'Loading today’s tests, classes, and study actions.'
+  };
+}
+
+function adminActionsMarkup(summary) {
+  const items = Array.isArray(summary?.actionsToday) ? summary.actionsToday : [];
+  return items
+    .map(
+      (item, index) => `
+        <article class="stack-item admin-action-card">
+          <div class="admin-action-index">${index + 1}</div>
+          <div>
+            <p><strong>${escapeHtml(item.title || 'Next step')}</strong></p>
+            <p class="muted">${escapeHtml(item.description || '')}</p>
+          </div>
+        </article>
+      `
+    )
+    .join('');
+}
+
+function adminCourseAttentionMarkup(summary) {
+  const items = Array.isArray(summary?.coursesNeedingAttention) ? summary.coursesNeedingAttention : [];
+  if (!items.length) {
+    return `
+      <article class="stack-item admin-action-card admin-action-card-ok">
+        <div class="admin-action-index">✓</div>
+        <div>
+          <p><strong>All courses look healthy</strong></p>
+          <p class="muted">No missing syllabus, empty enrolment, or stale assessment issues were found.</p>
+        </div>
+      </article>
+    `;
+  }
+
+  return items
+    .slice(0, 6)
+    .map(
+      (item) => `
+        <article class="stack-item course-attention-card">
+          <div class="progress-row">
+            <div>
+              <p><strong>${escapeHtml(item.name || 'Course')}</strong></p>
+              <p class="muted">${escapeHtml(item.courseDuration || 'Duration not set')} | ${escapeHtml(item.enrolledCount || 0)} students | ${escapeHtml(item.recentTestCount || 0)} recent tests</p>
+            </div>
+            <span class="status-badge pending">${escapeHtml((item.reasons || []).length)} issue${(item.reasons || []).length === 1 ? '' : 's'}</span>
+          </div>
+          <div class="meta-pill-row">
+            ${(item.reasons || [])
+              .map((reason) => `<span class="meta-pill">${escapeHtml(reason)}</span>`)
+              .join('')}
+          </div>
+        </article>
+      `
+    )
+    .join('');
+}
+
+function getPublishedTestStatus(test) {
+  if (test?.archivedAt) {
+    return { label: 'Archived', className: 'neutral' };
+  }
+
+  const now = Date.now();
+  const startAt = test?.scheduledStartAt ? new Date(test.scheduledStartAt).getTime() : Number.NaN;
+  const endAt = test?.scheduledEndAt ? new Date(test.scheduledEndAt).getTime() : Number.NaN;
+  if (Number.isFinite(startAt) && Number.isFinite(endAt)) {
+    if (now < startAt) return { label: 'Scheduled', className: 'pending' };
+    if (now > endAt) return { label: 'Closed', className: 'warn' };
+    return { label: 'Live', className: 'done' };
+  }
+
+  return { label: 'Active', className: 'done' };
 }
 
 function getValidMcqQuestionCount(value) {
@@ -1907,7 +2138,7 @@ function assessmentAnswersMarkup(attempt) {
   const answers = Array.isArray(attempt?.answers) ? attempt.answers : [];
   if (!answers.length) return '<span class="muted">-</span>';
 
-  if (attempt.type !== 'long') {
+  if (normalizeTestTypeValue(attempt.type) !== 'long') {
     return '<span class="muted">Auto-graded</span>';
   }
 
@@ -2259,8 +2490,6 @@ function renderLogin(role) {
 
 async function renderAdminDashboard() {
   clearAttemptTimer();
-  beginNavTransition();
-
   if (state.adminTab === 'teachers') state.adminTab = 'teachers_create';
   if (state.adminTab === 'subjects') state.adminTab = 'courses_create';
   if (state.adminTab === 'students') state.adminTab = 'students_view';
@@ -2281,6 +2510,14 @@ async function renderAdminDashboard() {
   if (!allowedTabs.has(state.adminTab)) {
     state.adminTab = 'dashboard';
   }
+
+  const adminLoadingCopy = getAdminLoadingCopy(state.adminTab);
+  beginNavTransition(adminLoadingCopy.title);
+  renderWorkspaceLoading({
+    title: adminLoadingCopy.title,
+    detail: adminLoadingCopy.detail,
+    navMarkup: adminNavMarkup(state.adminTab)
+  });
 
   const user = state.session?.user || { fullName: '', username: '' };
   const institutionId = state.session?.institutionId || '';
@@ -2304,7 +2541,20 @@ async function renderAdminDashboard() {
     await Promise.all([
       shouldLoadSummary
         ? api('/admin/summary')
-        : Promise.resolve({ data: { summary: { teacherCount: 0, studentCount: 0, subjectCount: 0 } } }),
+        : Promise.resolve({
+            data: {
+              summary: {
+                teacherCount: 0,
+                studentCount: 0,
+                subjectCount: 0,
+                testsPublishedToday: 0,
+                studentsPerTeacher: 0,
+                coursesNeedingAttention: [],
+                coursesNeedingAttentionCount: 0,
+                actionsToday: []
+              }
+            }
+          }),
       shouldLoadTeachers ? api('/admin/teachers') : Promise.resolve({ data: { teachers: [] } }),
       shouldLoadSubjects ? api('/admin/subjects') : Promise.resolve({ data: { subjects: [] } }),
     state.adminTab === 'students_view' ? api(`/admin/students${studentsQuery}`) : Promise.resolve(null),
@@ -2354,10 +2604,49 @@ async function renderAdminDashboard() {
           state.adminTab === 'dashboard'
             ? `
               <section class="stats-grid">
-                <article class="panel stat"><h3>${summary.teacherCount}</h3><p>Total Teachers</p></article>
-                <article class="panel stat"><h3>${summary.studentCount}</h3><p>Total Students</p></article>
+                <article class="panel stat"><h3>${summary.teacherCount}</h3><p>Active Teachers</p></article>
+                <article class="panel stat"><h3>${summary.studentCount}</h3><p>Active Students</p></article>
                 <article class="panel stat"><h3>${summary.subjectCount}</h3><p>Total Courses</p></article>
-                <article class="panel stat"><h3>${summary.teacherCount ? Math.round((summary.studentCount / summary.teacherCount) * 10) / 10 : 0}</h3><p>Students / Teacher</p></article>
+                <article class="panel stat"><h3>${summary.coursesNeedingAttentionCount || 0}</h3><p>Courses Needing Attention</p></article>
+              </section>
+
+              <section class="stats-grid admin-mini-stats">
+                <article class="panel stat">
+                  <h3>${summary.testsPublishedToday || 0}</h3>
+                  <p>Tests Published Today</p>
+                </article>
+                <article class="panel stat">
+                  <h3>${summary.studentsPerTeacher || 0}</h3>
+                  <p>Students / Teacher</p>
+                </article>
+              </section>
+
+              <section class="two-grid admin-guidance-grid">
+                <article class="panel">
+                  <div class="progress-row">
+                    <div>
+                      <h3>What Needs Action Today</h3>
+                      <p class="muted">The first things to fix so the institution keeps moving.</p>
+                    </div>
+                    <span class="alert-tag ${summary.actionsToday?.length > 1 ? 'alert-tag-warn' : 'alert-tag-ok'}">${escapeHtml(summary.actionsToday?.length || 0)} item${summary.actionsToday?.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <div class="stack">
+                    ${adminActionsMarkup(summary)}
+                  </div>
+                </article>
+
+                <article class="panel">
+                  <div class="progress-row">
+                    <div>
+                      <h3>Courses Needing Attention</h3>
+                      <p class="muted">Courses that are missing a syllabus, students, or recent assessment activity.</p>
+                    </div>
+                    <span class="alert-tag ${(summary.coursesNeedingAttentionCount || 0) > 0 ? 'alert-tag-warn' : 'alert-tag-ok'}">${escapeHtml(summary.coursesNeedingAttentionCount || 0)} course${summary.coursesNeedingAttentionCount === 1 ? '' : 's'}</span>
+                  </div>
+                  <div class="stack">
+                    ${adminCourseAttentionMarkup(summary)}
+                  </div>
+                </article>
               </section>
             `
             : ''
@@ -3037,10 +3326,16 @@ async function renderAdminDashboard() {
 
 async function renderTeacherDashboard() {
   clearAttemptTimer();
-  beginNavTransition();
-
   if (state.teacherTab === 'tests') state.teacherTab = 'assessment_conduct';
   if (state.teacherTab === 'assessment') state.teacherTab = 'assessment_results';
+
+  const teacherLoadingCopy = getTeacherLoadingCopy(state.teacherTab);
+  beginNavTransition(teacherLoadingCopy.title);
+  renderWorkspaceLoading({
+    title: teacherLoadingCopy.title,
+    detail: teacherLoadingCopy.detail,
+    navMarkup: teacherNavMarkup(state.teacherTab)
+  });
 
   const user = state.session?.user || { fullName: '', username: '' };
   const shouldLoadSubjects = state.teacherTab !== 'accounts';
@@ -3078,6 +3373,15 @@ async function renderTeacherDashboard() {
   ) {
     state.teacherAssessmentSubjectId = '';
   }
+  if (
+    state.teacherPublishedTestSubjectId &&
+    !subjects.some((item) => item._id === state.teacherPublishedTestSubjectId)
+  ) {
+    state.teacherPublishedTestSubjectId = '';
+  }
+  if (!['active', 'archived', 'all'].includes(state.teacherPublishedTestStatus)) {
+    state.teacherPublishedTestStatus = 'active';
+  }
   const studentQuery = toQueryString({
     q: state.teacherTab === 'students' ? state.teacherStudentQuery : '',
     subjectId: state.teacherTab === 'students' ? state.teacherSubjectFilter : ''
@@ -3098,9 +3402,15 @@ async function renderTeacherDashboard() {
     ? api(`/teacher/resources${resourcesQuery}`)
     : Promise.resolve({ data: { resources: [] } });
 
-  const testsQuery = toQueryString({
-    subjectId: state.teacherTestSubjectId
-  });
+  const testsQuery =
+    state.teacherTab === 'assessment_conduct'
+      ? toQueryString({
+          q: state.teacherPublishedTestQuery,
+          subjectId: state.teacherPublishedTestSubjectId,
+          type: state.teacherPublishedTestType,
+          status: state.teacherPublishedTestStatus
+        })
+      : '';
   const testsPromise = shouldLoadTests
     ? api(`/teacher/tests${testsQuery}`)
     : Promise.resolve({ data: { tests: [] } });
@@ -3170,6 +3480,12 @@ async function renderTeacherDashboard() {
 
   const resources = resourcesResult.data.resources || [];
   const tests = testsResult.data.tests || [];
+  const testsSummary = testsResult.data.summary || {
+    shownCount: tests.length,
+    activeCount: tests.length,
+    archivedCount: 0,
+    totalCount: tests.length
+  };
   if (state.teacherViewedTestId && !tests.some((test) => test._id === state.teacherViewedTestId)) {
     state.teacherViewedTestId = '';
   }
@@ -3231,7 +3547,7 @@ async function renderTeacherDashboard() {
                 <article class="panel stat"><h3>${subjects.length}</h3><p>Subjects</p></article>
                 <article class="panel stat"><h3>${students.length}</h3><p>Students</p></article>
                 <article class="panel stat"><h3>${resources.length}</h3><p>Resources</p></article>
-                <article class="panel stat"><h3>${tests.length}</h3><p>Published Tests</p></article>
+                <article class="panel stat"><h3>${testsSummary.activeCount || tests.length}</h3><p>Published Tests</p></article>
               </section>
 
               <section class="panel">
@@ -3957,7 +4273,59 @@ async function renderTeacherDashboard() {
               </section>
 
               <section class="panel table-panel">
-                <h3>Published Tests</h3>
+                <div class="progress-row">
+                  <div>
+                    <h3>Published Tests</h3>
+                    <p class="muted">Search by title, filter what is on screen, and archive older tests once they are no longer part of the active teaching flow.</p>
+                  </div>
+                  <div class="meta-pill-row">
+                    <span class="meta-pill">Shown: ${escapeHtml(testsSummary.shownCount || 0)}</span>
+                    <span class="meta-pill">Active: ${escapeHtml(testsSummary.activeCount || 0)}</span>
+                    <span class="meta-pill">Archived: ${escapeHtml(testsSummary.archivedCount || 0)}</span>
+                  </div>
+                </div>
+                <div class="three-grid-form published-tests-toolbar">
+                  <div>
+                    <label for="teacherPublishedTestQuery">Search Tests</label>
+                    <input
+                      id="teacherPublishedTestQuery"
+                      type="text"
+                      value="${escapeHtml(state.teacherPublishedTestQuery)}"
+                      placeholder="Search by test title"
+                    />
+                  </div>
+                  <div>
+                    <label for="teacherPublishedTestSubjectId">Filter by Course</label>
+                    <select id="teacherPublishedTestSubjectId">
+                      <option value="">All Courses</option>
+                      ${subjects
+                        .map(
+                          (subject) => `
+                            <option value="${subject._id}" ${
+                              state.teacherPublishedTestSubjectId === subject._id ? 'selected' : ''
+                            }>${escapeHtml(subject.name)}</option>
+                          `
+                        )
+                        .join('')}
+                    </select>
+                  </div>
+                  <div>
+                    <label for="teacherPublishedTestType">Filter by Type</label>
+                    <select id="teacherPublishedTestType">
+                      <option value="">All Types</option>
+                      <option value="mcq" ${state.teacherPublishedTestType === 'mcq' ? 'selected' : ''}>MCQ</option>
+                      <option value="long" ${state.teacherPublishedTestType === 'long' ? 'selected' : ''}>Upload Questions as PDF</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label for="teacherPublishedTestStatus">Show</label>
+                    <select id="teacherPublishedTestStatus">
+                      <option value="active" ${state.teacherPublishedTestStatus === 'active' ? 'selected' : ''}>Active only</option>
+                      <option value="archived" ${state.teacherPublishedTestStatus === 'archived' ? 'selected' : ''}>Archived only</option>
+                      <option value="all" ${state.teacherPublishedTestStatus === 'all' ? 'selected' : ''}>All tests</option>
+                    </select>
+                  </div>
+                </div>
                 <div class="table-wrap">
                   <table>
                     <thead>
@@ -3965,57 +4333,64 @@ async function renderTeacherDashboard() {
                         <th>Title</th>
                         <th>Type</th>
                         <th>Audience</th>
-                        <th>Duration</th>
+                        <th>Status</th>
                         <th>Schedule</th>
-                        <th>Created</th>
-                        <th>View Test</th>
-                        <th>Edit & Re-conduct</th>
-                        <th>Delete</th>
+                        <th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
                       ${
                         tests.length
                           ? tests
-                              .map(
-                                (test) => `
+                              .map((test) => {
+                                const testStatus = getPublishedTestStatus(test);
+                                const normalizedType = normalizeTestTypeValue(test.type);
+                                return `
                                   <tr>
-                                    <td>${escapeHtml(test.title)}</td>
+                                    <td>
+                                      <strong>${escapeHtml(test.title)}</strong>
+                                      <br />
+                                      <small>${escapeHtml(formatDate(test.createdAt))} • ${escapeHtml(test.durationMinutes)} min</small>
+                                    </td>
                                     <td>${escapeHtml(formatTestType(test.type))}</td>
                                     <td>${test.audienceMode === 'selected' ? 'Selected Students' : 'All Students'}</td>
-                                    <td>${escapeHtml(test.durationMinutes)} min</td>
+                                    <td><span class="status-badge ${escapeHtml(testStatus.className)}">${escapeHtml(testStatus.label)}</span></td>
                                     <td>${
                                       test.scheduledStartAt && test.scheduledEndAt
                                         ? `${escapeHtml(formatDate(test.scheduledStartAt))}<br /><small>${escapeHtml(formatTime(test.scheduledEndAt))}</small>`
                                         : 'Immediate'
                                     }</td>
-                                    <td>${formatDate(test.createdAt)}</td>
-                                    <td>
-                                      <button class="mini-btn" data-view-test="${test._id}">
-                                        ${state.teacherViewedTestId === test._id ? 'Viewing' : 'View Test'}
-                                      </button>
-                                    </td>
-                                    <td>
-                                      ${
-                                        test.type === 'mcq'
-                                          ? `<button class="mini-btn" data-edit-reconduct-test="${test._id}">Edit & Re-conduct</button>`
-                                          : '<span class="muted">MCQ only</span>'
-                                      }
-                                    </td>
-                                    <td>
-                                      <button
-                                        class="mini-btn danger"
-                                        data-delete-test="${test._id}"
-                                        data-delete-test-title="${escapeHtml(test.title || 'this test')}"
-                                      >
-                                        Delete
-                                      </button>
+                                    <td class="actions-cell">
+                                      <div class="table-action-group">
+                                        <button class="mini-btn" data-view-test="${test._id}">
+                                          ${state.teacherViewedTestId === test._id ? 'Viewing' : 'View Test'}
+                                        </button>
+                                        ${
+                                          normalizedType === 'mcq'
+                                            ? `<button class="mini-btn" data-edit-reconduct-test="${test._id}">Edit & Re-conduct</button>`
+                                            : ''
+                                        }
+                                        <button
+                                          class="mini-btn"
+                                          data-archive-test="${test._id}"
+                                          data-archive-next="${test.archivedAt ? 'restore' : 'archive'}"
+                                        >
+                                          ${test.archivedAt ? 'Restore' : 'Archive'}
+                                        </button>
+                                        <button
+                                          class="mini-btn danger"
+                                          data-delete-test="${test._id}"
+                                          data-delete-test-title="${escapeHtml(test.title || 'this test')}"
+                                        >
+                                          Delete
+                                        </button>
+                                      </div>
                                     </td>
                                   </tr>
-                                `
-                              )
+                                `;
+                              })
                               .join('')
-                          : '<tr><td colspan="9">No tests published.</td></tr>'
+                          : '<tr><td colspan="6">No tests match the current search and filters.</td></tr>'
                       }
                     </tbody>
                   </table>
@@ -4149,7 +4524,7 @@ async function renderTeacherDashboard() {
                         assessments.length
                           ? assessments
                               .map((attempt) => {
-                                const isSubjective = attempt.type === 'long';
+                                const isSubjective = normalizeTestTypeValue(attempt.type) === 'long';
                                 const rawMarks =
                                   attempt.assignedMarks == null ? attempt.scorePercent : attempt.assignedMarks;
                                 const scoreText =
@@ -4220,13 +4595,13 @@ async function renderTeacherDashboard() {
                   }
                 </p>
                 ${
-                  viewedTest.type === 'mcq'
+                  normalizeTestTypeValue(viewedTest.type) === 'mcq'
                     ? `<p class="muted">Marks: +${escapeHtml(viewedTest.mcqCorrectMark ?? 1)} for right, ${escapeHtml(viewedTest.mcqWrongMark ?? 0)} for wrong.</p>`
                     : ''
                 }
                 <div class="button-row">
                   ${
-                    viewedTest.type === 'mcq'
+                    normalizeTestTypeValue(viewedTest.type) === 'mcq'
                       ? `
                         <button class="mini-btn" data-download-viewed-combined="${viewedTest._id}">
                           Download Test + Answer Key PDF
@@ -5219,13 +5594,74 @@ async function renderTeacherDashboard() {
       const testId = button.getAttribute('data-edit-reconduct-test');
       const sourceTest = tests.find((test) => test._id === testId);
       if (!sourceTest) return;
-      if (sourceTest.type !== 'mcq') {
+      if (normalizeTestTypeValue(sourceTest.type) !== 'mcq') {
         showToast('Edit & Re-conduct is available for MCQ tests only.', 'error');
         return;
       }
       state.teacherViewedTestId = '';
       state.teacherReconductDraft = buildReconductDraftFromTest(sourceTest);
       void renderTeacherDashboard();
+    });
+  });
+
+  const teacherPublishedTestQuery = document.getElementById('teacherPublishedTestQuery');
+  if (teacherPublishedTestQuery) {
+    teacherPublishedTestQuery.addEventListener('input', (event) => {
+      const nextValue = event.target.value;
+      debounceByKey('teacher-published-tests-search', () => {
+        state.teacherPublishedTestQuery = nextValue;
+        void renderTeacherDashboard();
+      });
+    });
+  }
+
+  const teacherPublishedTestSubjectId = document.getElementById('teacherPublishedTestSubjectId');
+  if (teacherPublishedTestSubjectId) {
+    teacherPublishedTestSubjectId.addEventListener('change', (event) => {
+      state.teacherPublishedTestSubjectId = event.target.value || '';
+      void renderTeacherDashboard();
+    });
+  }
+
+  const teacherPublishedTestType = document.getElementById('teacherPublishedTestType');
+  if (teacherPublishedTestType) {
+    teacherPublishedTestType.addEventListener('change', (event) => {
+      state.teacherPublishedTestType = event.target.value || '';
+      void renderTeacherDashboard();
+    });
+  }
+
+  const teacherPublishedTestStatus = document.getElementById('teacherPublishedTestStatus');
+  if (teacherPublishedTestStatus) {
+    teacherPublishedTestStatus.addEventListener('change', (event) => {
+      state.teacherPublishedTestStatus = event.target.value || 'active';
+      void renderTeacherDashboard();
+    });
+  }
+
+  document.querySelectorAll('[data-archive-test]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const testId = button.getAttribute('data-archive-test');
+      const nextAction = button.getAttribute('data-archive-next') || 'archive';
+      if (!testId) return;
+
+      await withButtonLoading(button, nextAction === 'restore' ? 'Restoring...' : 'Archiving...', async () => {
+        try {
+          await api(`/teacher/tests/${testId}/archive`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              archived: nextAction !== 'restore'
+            })
+          });
+          if (nextAction !== 'restore' && state.teacherViewedTestId === testId) {
+            state.teacherViewedTestId = '';
+          }
+          showToast(nextAction === 'restore' ? 'Test restored.' : 'Test archived.', 'success');
+          void renderTeacherDashboard();
+        } catch (error) {
+          showToast(error.message || 'Could not update test status.', 'error');
+        }
+      });
     });
   });
 
@@ -5366,7 +5802,7 @@ async function renderTeacherDashboard() {
 
       await withButtonLoading(button, 'Preparing...', async () => {
         try {
-          if (test.type === 'long' && test.questionPdfUrl) {
+          if (normalizeTestTypeValue(test.type) === 'long' && test.questionPdfUrl) {
             const link = document.createElement('a');
             link.href = test.questionPdfUrl;
             link.target = '_blank';
@@ -5399,7 +5835,7 @@ async function renderTeacherDashboard() {
 
       await withButtonLoading(button, 'Preparing...', async () => {
         try {
-          if (test.type === 'long' && test.answerKeyPdfUrl) {
+          if (normalizeTestTypeValue(test.type) === 'long' && test.answerKeyPdfUrl) {
             const link = document.createElement('a');
             link.href = test.answerKeyPdfUrl;
             link.target = '_blank';
@@ -5542,7 +5978,7 @@ function renderStudentAttemptResult(test, attempt, backTab) {
           <p class="muted">Time spent: ${Math.round((attempt.timeSpentSeconds || 0) / 60)} minutes</p>
 
           ${
-            test.type === 'mcq' || test.hasAnswerKey
+            normalizeTestTypeValue(test.type) === 'mcq' || test.hasAnswerKey
               ? '<button class="cta-soft" id="viewAnswerKeyBtn">View Answer Key</button>'
               : ''
           }
@@ -5583,7 +6019,7 @@ function renderStudentTestAttempt(test, backTab) {
     .map((question, index) => {
       const hasOptions = Array.isArray(question.options) && question.options.length >= 2;
 
-      if (test.type === 'mcq' || hasOptions) {
+      if (normalizeTestTypeValue(test.type) === 'mcq' || hasOptions) {
         const options = (question.options || [])
           .map(
             (option, optionIndex) => `
@@ -5665,7 +6101,7 @@ function renderStudentTestAttempt(test, backTab) {
     const answers = (test.questions || []).map((_, index) => {
       const question = test.questions?.[index] || {};
       const hasOptions = Array.isArray(question.options) && question.options.length >= 2;
-      if (test.type === 'mcq' || hasOptions) {
+      if (normalizeTestTypeValue(test.type) === 'mcq' || hasOptions) {
         const checked = document.querySelector(`input[name=\"q-${index}\"]:checked`);
         return checked ? Number(checked.value) : null;
       }
@@ -6047,7 +6483,13 @@ function studentClassCardMarkup(item) {
 
 async function renderStudentDashboard() {
   clearAttemptTimer();
-  beginNavTransition();
+  const studentLoadingCopy = getStudentLoadingCopy(state.studentTab);
+  beginNavTransition(studentLoadingCopy.title);
+  renderWorkspaceLoading({
+    title: studentLoadingCopy.title,
+    detail: studentLoadingCopy.detail,
+    navMarkup: studentNavMarkup(state.studentTab)
+  });
 
   const user = state.session?.user || { fullName: '', username: '' };
   const institutionId = state.session?.institutionId || '';
@@ -6448,7 +6890,7 @@ async function renderStudentDashboard() {
                                   <tr>
                                     <td>${formatDate(item.createdAt)}</td>
                                     <td>${escapeHtml(item.test?.title || '-')}</td>
-                                    <td>${escapeHtml((item.type || '-').toUpperCase())}</td>
+                                    <td>${escapeHtml(formatTestType(item.type))}</td>
                                     <td>${item.scorePercent == null ? '-' : `${escapeHtml(item.scorePercent)}%`}</td>
                                     <td>
                                       ${

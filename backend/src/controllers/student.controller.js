@@ -6,6 +6,13 @@ import { User } from '../models/User.js';
 import { resolveInlineAsset, sendInlineAsset } from '../utils/protected-file.js';
 import { badRequest, notFound, ok } from '../utils/http.js';
 
+function normalizeLegacyTestType(type) {
+  const normalized = String(type || '').trim().toLowerCase();
+  if (!normalized) return '';
+  if (normalized === 'short' || normalized === 'pdf_upload') return 'long';
+  return normalized;
+}
+
 export async function dashboard(req, res) {
   const [profile, attemptCount] = await Promise.all([
     StudentProfile.findOne({ userId: req.auth.userId }).populate('subjects', 'name').lean(),
@@ -45,12 +52,19 @@ export async function testHistory(req, res) {
 
   const history = attempts.map((attempt) => {
     const test = testMap.get(attempt.testId.toString()) || null;
-    const answerKeyAvailable = Boolean(test && (attempt.type === 'mcq' || test.answerKeyPdfUrl));
+    const normalizedType = normalizeLegacyTestType(attempt.type);
+    const answerKeyAvailable = Boolean(test && (normalizedType === 'mcq' || test.answerKeyPdfUrl));
 
     return {
       ...attempt,
+      type: normalizedType,
       answerKeyAvailable,
-      test
+      test: test
+        ? {
+            ...test,
+            type: normalizeLegacyTestType(test.type)
+          }
+        : null
     };
   });
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { Test } from '../models/Test.js';
 import { StudentProfile } from '../models/StudentProfile.js';
 import { Subject } from '../models/Subject.js';
 import { User } from '../models/User.js';
@@ -302,17 +303,141 @@ export async function updateTeacher(req, res) {
 }
 
 export async function dashboardSummary(req, res) {
-  const [teacherCount, studentCount, subjectCount] = await Promise.all([
-    User.countDocuments({ institutionId: req.auth.institutionId, role: 'teacher', isActive: true }),
-    User.countDocuments({ institutionId: req.auth.institutionId, role: 'student', isActive: true }),
-    Subject.countDocuments({ institutionId: req.auth.institutionId })
+  const institutionId = req.auth.institutionId;
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const lookbackStart = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+
+  const [teachers, students, subjects, recentTests, testsPublishedToday] = await Promise.all([
+    User.find({ institutionId, role: 'teacher', isActive: true }).select('_id fullName').lean(),
+    User.find({ institutionId, role: 'student', isActive: true }).select('_id').lean(),
+    Subject.find({ institutionId })
+      .select('_id name courseDuration syllabusPdfUrl')
+      .sort({ name: 1, createdAt: -1 })
+      .lean(),
+    Test.find({
+      institutionId,
+      archivedAt: null,
+      createdAt: { $gte: lookbackStart }
+    })
+      .select('subjectId createdAt')
+      .lean(),
+    Test.countDocuments({
+      institutionId,
+      archivedAt: null,
+      createdAt: { $gte: startOfToday }
+    })
   ]);
+
+  const teacherCount = teachers.length;
+  const studentCount = students.length;
+  const subjectCount = subjects.length;
+
+  const activeTeacherIds = teachers.map((teacher) => teacher._id);
+  const activeStudentIds = students.map((student) => student._id);
+
+  const profiles = activeStudentIds.length
+    ? await StudentProfile.find({
+        userId: { $in: activeStudentIds },
+        teacherId: { $in: activeTeacherIds }
+      })
+        .select('subjects')
+        .lean()
+    : [];
+
+  const subjectStudentCounts = new Map();
+  profiles.forEach((profile) => {
+    (profile.subjects || []).forEach((subjectId) => {
+      const key = subjectId?.toString();
+      if (!key) return;
+      subjectStudentCounts.set(key, (subjectStudentCounts.get(key) || 0) + 1);
+    });
+  });
+
+  const recentTestCounts = new Map();
+  recentTests.forEach((test) => {
+    const key = test.subjectId?.toString();
+    if (!key) return;
+    recentTestCounts.set(key, (recentTestCounts.get(key) || 0) + 1);
+  });
+
+  const coursesNeedingAttention = subjects
+    .map((subject) => {
+      const reasons = [];
+      const subjectId = subject._id.toString();
+      const enrolledCount = subjectStudentCounts.get(subjectId) || 0;
+      const recentTestCount = recentTestCounts.get(subjectId) || 0;
+
+      if (!String(subject.syllabusPdfUrl || '').trim()) reasons.push('Missing syllabus');
+      if (enrolledCount === 0) reasons.push('No students enrolled');
+      if (recentTestCount === 0) reasons.push('No test in the last 14 days');
+
+      return {
+        id: subject._id,
+        name: subject.name,
+        courseDuration: subject.courseDuration || '',
+        enrolledCount,
+        recentTestCount,
+        reasons
+      };
+    })
+    .filter((subject) => subject.reasons.length)
+    .sort((left, right) => right.reasons.length - left.reasons.length || left.name.localeCompare(right.name));
+
+  const actionsToday = [];
+  if (teacherCount === 0) {
+    actionsToday.push({
+      title: 'Create your first teacher',
+      description: 'Teachers unlock student onboarding, resources, class plans and assessments.'
+    });
+  }
+  if (studentCount === 0) {
+    actionsToday.push({
+      title: 'Add students to your courses',
+      description: 'No active students are enrolled yet, so today’s learning flow cannot begin.'
+    });
+  }
+  const missingSyllabusCount = coursesNeedingAttention.filter((item) =>
+    item.reasons.includes('Missing syllabus')
+  ).length;
+  if (missingSyllabusCount > 0) {
+    actionsToday.push({
+      title: `${missingSyllabusCount} course${missingSyllabusCount === 1 ? '' : 's'} need syllabus updates`,
+      description: 'Open Courses and upload the latest syllabus so students can view it in their dashboard.'
+    });
+  }
+  const noStudentsCount = coursesNeedingAttention.filter((item) =>
+    item.reasons.includes('No students enrolled')
+  ).length;
+  if (noStudentsCount > 0) {
+    actionsToday.push({
+      title: `${noStudentsCount} course${noStudentsCount === 1 ? '' : 's'} have no students`,
+      description: 'Assign students to these courses so teachers can publish tests and class materials for them.'
+    });
+  }
+  if (testsPublishedToday === 0) {
+    actionsToday.push({
+      title: 'No tests published today',
+      description: 'Ask teachers to publish or schedule today’s assessment so students see fresh work in their queue.'
+    });
+  }
+  if (!actionsToday.length) {
+    actionsToday.push({
+      title: 'You are on track today',
+      description: 'Teachers, students, courses and tests are active. Use Analytics to monitor engagement.'
+    });
+  }
 
   return ok(res, {
     summary: {
       teacherCount,
       studentCount,
-      subjectCount
+      subjectCount,
+      testsPublishedToday,
+      studentsPerTeacher: teacherCount ? Math.round((studentCount / teacherCount) * 10) / 10 : 0,
+      coursesNeedingAttention,
+      coursesNeedingAttentionCount: coursesNeedingAttention.length,
+      actionsToday
     }
   });
 }

@@ -28,6 +28,10 @@ test.describe('portal shell smoke', () => {
 
     await login(page, "I'm an Admin", ADMIN_USERNAME, ADMIN_PASSWORD);
     await expect(page.getByText('Welcome, Demo Admin')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('heading', { name: 'What Needs Action Today' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Courses Needing Attention' })).toBeVisible();
+    await expect(page.getByText('Active Teachers')).toBeVisible();
+    await expect(page.getByText('Active Students')).toBeVisible();
 
     await page.getByText('Teachers', { exact: true }).click();
     await expect(page.getByRole('button', { name: 'Edit Existing Teacher' })).toBeVisible();
@@ -110,6 +114,86 @@ test.describe('portal shell smoke', () => {
     await expect(page.getByRole('dialog', { name: 'Delete Test' })).toHaveCount(0);
 
     expect(nativeDialogSeen).toBeFalsy();
+  });
+
+  test('teacher published tests search, archive, restore, and loading shell work', async ({ page }) => {
+    const title = `PW Archive ${Date.now()}`;
+
+    await page.route('**/api/teacher/tests**', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await route.continue();
+    });
+
+    await login(page, "I'm a Teacher", TEACHER_USERNAME, TEACHER_PASSWORD);
+    await expect(page.getByText('Welcome, Demo Teacher')).toBeVisible({ timeout: 30000 });
+
+    await page.getByText('Assessment', { exact: true }).click();
+    await page.locator('[data-teacher-tab="assessment_conduct"]:visible').click();
+    await expect(page.getByText('Syncing workspace')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Published Tests' })).toBeVisible();
+    await expect(page.getByLabel('Search Tests')).toBeVisible();
+    await expect(page.getByLabel('Filter by Type')).toBeVisible();
+    await expect(page.getByLabel('Show')).toBeVisible();
+
+    await page.evaluate(async ({ title }) => {
+      const subjectRes = await fetch('http://127.0.0.1:5050/api/teacher/subjects', {
+        credentials: 'include'
+      });
+      const subjectPayload = await subjectRes.json();
+      const subjectId = subjectPayload?.data?.subjects?.[0]?._id;
+      if (!subjectId) throw new Error('No subject available for teacher.');
+
+      const createRes = await fetch('http://127.0.0.1:5050/api/teacher/tests', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          subjectId,
+          title,
+          type: 'mcq',
+          durationMinutes: 5,
+          audienceMode: 'all',
+          questions: [
+            {
+              text: 'Playwright archive check question',
+              options: ['A', 'B', 'C', 'D'],
+              correctIndex: 0
+            }
+          ]
+        })
+      });
+
+      const payload = await createRes.json();
+      if (!createRes.ok) {
+        throw new Error(payload?.message || 'Failed to create test.');
+      }
+    }, { title });
+
+    await page.getByLabel('Search Tests').fill(title);
+    await expect(page.getByRole('cell', { name: title })).toBeVisible({ timeout: 30000 });
+    const row = page.locator('tr', { hasText: title }).first();
+    await expect(row.getByText('Active')).toBeVisible();
+
+    await row.getByRole('button', { name: 'Archive' }).click();
+    await expect(page.getByText('Test archived.')).toBeVisible();
+
+    await page.getByLabel('Show').selectOption('archived');
+    await expect(page.getByRole('cell', { name: title })).toBeVisible({ timeout: 30000 });
+    const archivedRow = page.locator('tr', { hasText: title }).first();
+    await expect(archivedRow.getByText('Archived')).toBeVisible();
+
+    await archivedRow.getByRole('button', { name: 'Restore' }).click();
+    await expect(page.getByText('Test restored.')).toBeVisible();
+
+    await page.getByLabel('Show').selectOption('active');
+    await expect(page.getByRole('cell', { name: title })).toBeVisible({ timeout: 30000 });
+    const restoredRow = page.locator('tr', { hasText: title }).first();
+    await restoredRow.getByRole('button', { name: 'Delete' }).click();
+    await expect(page.getByRole('dialog', { name: 'Delete Test' })).toBeVisible();
+    await page.getByRole('button', { name: 'Delete Test' }).click();
+    await expect(page.getByRole('cell', { name: title })).toHaveCount(0);
   });
 
   test('ended class plan no longer shows its resource to students', async ({ page }) => {

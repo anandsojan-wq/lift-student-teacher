@@ -19,10 +19,11 @@ const testSchema = new mongoose.Schema(
     teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject', required: true },
     title: { type: String, required: true },
-    type: { type: String, enum: ['mcq', 'long'], required: true },
+    type: { type: String, enum: ['mcq', 'long', 'short'], required: true },
     durationMinutes: { type: Number, required: true },
     scheduledStartAt: { type: Date, default: null },
     scheduledEndAt: { type: Date, default: null },
+    archivedAt: { type: Date, default: null },
     audienceMode: { type: String, enum: ['all', 'selected'], default: 'all' },
     assignedStudentIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     sourcePdfName: { type: String, default: '' },
@@ -38,5 +39,6 @@ const testSchema = new mongoose.Schema(
 );
 
 testSchema.index({ institutionId: 1, subjectId: 1, createdAt: -1 });
+testSchema.index({ institutionId: 1, teacherId: 1, archivedAt: 1, createdAt: -1 });
 
 export const Test = mongoose.model('Test', testSchema);

@@ -12,7 +12,7 @@ import { notifyUsers } from '../utils/notify.js';
 const createTestSchema = z.object({
   subjectId: z.string().min(1),
   title: z.string().trim().min(2, 'Test title must be at least 2 characters.'),
-  type: z.enum(['mcq', 'long']),
+  type: z.enum(['mcq', 'long', 'short', 'pdf_upload']),
   audienceMode: z.enum(['all', 'selected']).optional(),
   selectedStudentIds: z.array(z.string().min(1)).optional(),
   sourcePdfName: z.string().trim().max(180).optional().or(z.literal('')),
@@ -43,6 +43,36 @@ const gradeAttemptSchema = z.object({
   marks: z.number().min(0).max(100),
   feedback: z.string().trim().max(600).optional().or(z.literal(''))
 });
+
+const archiveTestSchema = z.object({
+  archived: z.boolean().default(true)
+});
+
+function normalizeLegacyTestType(type) {
+  const normalized = String(type || '').trim().toLowerCase();
+  if (!normalized) return '';
+  if (normalized === 'short' || normalized === 'pdf_upload') return 'long';
+  return normalized;
+}
+
+function toSupportedTestTypeQuery(type) {
+  const normalized = normalizeLegacyTestType(type);
+  if (!normalized) return null;
+  if (normalized === 'long') return { $in: ['long', 'short'] };
+  return normalized;
+}
+
+function mapTestForResponse(test) {
+  return {
+    ...test,
+    type: normalizeLegacyTestType(test?.type),
+    archivedAt: test?.archivedAt || null
+  };
+}
+
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 function normalizeMcqQuestions(rawQuestions) {
   return rawQuestions.map((question, index) => {
@@ -100,6 +130,7 @@ export async function teacherCreateTest(req, res) {
   }
 
   const payload = parsed.data;
+  const normalizedType = normalizeLegacyTestType(payload.type);
   const audienceMode = payload.audienceMode || 'all';
   const selectedStudentIds = Array.from(
     new Set((payload.selectedStudentIds || []).map((item) => String(item || '').trim()).filter(Boolean))
@@ -110,7 +141,7 @@ export async function teacherCreateTest(req, res) {
   }).lean();
   if (!subject) return notFound(res, 'Subject not found.');
 
-  if (payload.type === 'mcq' && (payload.questions.length < 1 || payload.questions.length > 100)) {
+  if (normalizedType === 'mcq' && (payload.questions.length < 1 || payload.questions.length > 100)) {
     return badRequest(res, 'MCQ tests must have between 1 and 100 questions.');
   }
 
@@ -119,7 +150,7 @@ export async function teacherCreateTest(req, res) {
   const answerKeyPdfUrl = String(payload.answerKeyPdfUrl || '').trim();
   const answerKeyPdfName = String(payload.answerKeyPdfName || '').trim();
   const isPdfAuthoredTest = Boolean(String(payload.sourcePdfName || '').trim() || questionPdfUrl);
-  if (isPdfAuthoredTest || payload.type === 'long') {
+  if (isPdfAuthoredTest || normalizedType === 'long') {
     if (!questionPdfUrl) {
       return badRequest(res, 'Questions PDF is required for PDF-based tests.');
     }
@@ -130,7 +161,7 @@ export async function teacherCreateTest(req, res) {
 
   let questions;
   try {
-    if (payload.type === 'mcq') {
+    if (normalizedType === 'mcq') {
       questions = normalizeMcqQuestions(payload.questions);
     } else {
       questions = normalizeLongQuestions(payload.questions);
@@ -140,11 +171,11 @@ export async function teacherCreateTest(req, res) {
   }
 
   const durationMinutes =
-    payload.type === 'mcq'
+    normalizedType === 'mcq'
       ? Number(payload.durationMinutes || 5)
       : Number(payload.durationMinutes || 60);
-  const mcqCorrectMark = payload.type === 'mcq' ? Number(payload.mcqCorrectMark ?? 1) : 1;
-  const mcqWrongMark = payload.type === 'mcq' ? Number(payload.mcqWrongMark ?? 0) : 0;
+  const mcqCorrectMark = normalizedType === 'mcq' ? Number(payload.mcqCorrectMark ?? 1) : 1;
+  const mcqWrongMark = normalizedType === 'mcq' ? Number(payload.mcqWrongMark ?? 0) : 0;
 
   if (!Number.isFinite(mcqCorrectMark) || mcqCorrectMark <= 0) {
     return badRequest(res, 'MCQ correct-answer mark must be greater than 0.');
@@ -222,7 +253,7 @@ export async function teacherCreateTest(req, res) {
     teacherId: req.auth.userId,
     subjectId: payload.subjectId,
     title: payload.title,
-    type: payload.type,
+    type: normalizedType,
     durationMinutes,
     scheduledStartAt,
     scheduledEndAt,
@@ -242,7 +273,7 @@ export async function teacherCreateTest(req, res) {
     institutionId: req.auth.institutionId,
     recipientUserIds: assignedStudentIds,
     type: 'test',
-    message: `New ${payload.type.replace('_', ' ').toUpperCase()} test published: ${payload.title}`
+    message: `New ${normalizedType === 'mcq' ? 'MCQ' : 'Upload Questions as PDF'} test published: ${payload.title}`
   });
 
   await trackAnalyticsEvent({
@@ -253,7 +284,7 @@ export async function teacherCreateTest(req, res) {
     stage: 'activation',
     metadata: {
       testId: test._id.toString(),
-      testType: payload.type,
+      testType: normalizedType,
       subjectId: payload.subjectId,
       audienceMode,
       assignedCount: assignedStudentIds.length
@@ -265,14 +296,73 @@ export async function teacherCreateTest(req, res) {
 
 export async function teacherListTests(req, res) {
   const subjectId = String(req.query.subjectId || '').trim();
-  const query = {
+  const q = String(req.query.q || '').trim();
+  const status = String(req.query.status || 'active').trim().toLowerCase();
+  const requestedType = String(req.query.type || '').trim();
+  const typeQuery = toSupportedTestTypeQuery(requestedType);
+  const baseQuery = {
     institutionId: req.auth.institutionId,
     teacherId: req.auth.userId
   };
-  if (subjectId) query.subjectId = subjectId;
+  if (subjectId) baseQuery.subjectId = subjectId;
+  if (typeQuery) baseQuery.type = typeQuery;
+  if (q) baseQuery.title = { $regex: escapeRegex(q), $options: 'i' };
 
-  const tests = await Test.find(query).sort({ createdAt: -1 }).lean();
-  return ok(res, { tests });
+  const activeQuery = { ...baseQuery, archivedAt: null };
+  const archivedQuery = { ...baseQuery, archivedAt: { $ne: null } };
+  const listQuery =
+    status === 'archived'
+      ? archivedQuery
+      : status === 'all'
+        ? baseQuery
+        : activeQuery;
+  const sortQuery = status === 'archived' ? { archivedAt: -1, createdAt: -1 } : { archivedAt: 1, createdAt: -1 };
+
+  const [tests, activeCount, archivedCount, totalCount] = await Promise.all([
+    Test.find(listQuery).sort(sortQuery).lean(),
+    Test.countDocuments(activeQuery),
+    Test.countDocuments(archivedQuery),
+    Test.countDocuments(baseQuery)
+  ]);
+
+  return ok(res, {
+    tests: tests.map(mapTestForResponse),
+    summary: {
+      shownCount: tests.length,
+      activeCount,
+      archivedCount,
+      totalCount
+    }
+  });
+}
+
+export async function teacherArchiveTest(req, res) {
+  const parsed = archiveTestSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return badRequest(res, parsed.error.issues[0]?.message || 'Invalid archive payload.');
+  }
+
+  const test = await Test.findOne({
+    _id: req.params.testId,
+    institutionId: req.auth.institutionId,
+    teacherId: req.auth.userId
+  });
+
+  if (!test) return notFound(res, 'Test not found.');
+
+  test.archivedAt = parsed.data.archived ? new Date() : null;
+  await test.save();
+
+  return ok(
+    res,
+    {
+      test: {
+        id: test._id,
+        archivedAt: test.archivedAt
+      }
+    },
+    parsed.data.archived ? 'Test archived.' : 'Test restored.'
+  );
 }
 
 export async function teacherDeleteTest(req, res) {
@@ -305,7 +395,7 @@ export async function teacherListAssessments(req, res) {
     teacherId: req.auth.userId
   };
   if (subjectId) testQuery.subjectId = subjectId;
-  if (type) testQuery.type = type;
+  if (type) testQuery.type = toSupportedTestTypeQuery(type);
 
   const tests = await Test.find(testQuery)
     .select('title type subjectId totalQuestions questions')
@@ -318,7 +408,7 @@ export async function teacherListAssessments(req, res) {
     teacherId: req.auth.userId,
     testId: { $in: tests.map((item) => item._id) }
   };
-  if (type) attemptQuery.type = type;
+  if (type) attemptQuery.type = toSupportedTestTypeQuery(type);
   if (status === 'pending') attemptQuery.scorePercent = null;
   if (status === 'graded') attemptQuery.scorePercent = { $ne: null };
 
@@ -374,7 +464,7 @@ export async function teacherListAssessments(req, res) {
         id: attempt._id,
         createdAt: attempt.createdAt,
         updatedAt: attempt.updatedAt,
-        type: attempt.type,
+        type: normalizeLegacyTestType(attempt.type),
         scorePercent: attempt.scorePercent,
         assignedMarks: attempt.assignedMarks,
         evaluatedAt: attempt.evaluatedAt,
@@ -391,7 +481,7 @@ export async function teacherListAssessments(req, res) {
           ? {
               id: test._id,
               title: test.title,
-              type: test.type,
+              type: normalizeLegacyTestType(test.type),
               subjectId: test.subjectId,
               subjectName: subject?.name || '',
               totalQuestions: Array.isArray(test.questions) ? test.questions.length : 0
@@ -411,6 +501,7 @@ export async function teacherLiveTestsStats(req, res) {
   const liveTests = await Test.find({
     institutionId: req.auth.institutionId,
     teacherId: req.auth.userId,
+    archivedAt: null,
     scheduledStartAt: { $ne: null, $lte: now },
     scheduledEndAt: { $ne: null, $gte: now }
   })
@@ -517,7 +608,7 @@ export async function teacherLiveTestsStats(req, res) {
     return {
       id: test._id,
       title: test.title,
-      type: test.type,
+      type: normalizeLegacyTestType(test.type),
       subjectId: test.subjectId,
       subjectName: subjectMap.get(test.subjectId?.toString()) || '',
       scheduledStartAt: test.scheduledStartAt,
@@ -548,7 +639,7 @@ export async function teacherGradeAttempt(req, res) {
   });
   if (!attempt) return notFound(res, 'Attempt not found.');
 
-  if (attempt.type !== 'long') {
+  if (normalizeLegacyTestType(attempt.type) !== 'long') {
     return badRequest(res, 'Only PDF-upload test attempts can be graded here.');
   }
 
@@ -568,7 +659,7 @@ export async function teacherGradeAttempt(req, res) {
     institutionId: req.auth.institutionId,
     recipientUserIds: [attempt.studentId],
     type: 'assessment',
-    message: `Your ${attempt.type === 'mcq' ? 'MCQ' : 'PDF Upload'} test "${test?.title || 'Test'}" was graded: ${parsed.data.marks}%`
+    message: `Your ${normalizeLegacyTestType(attempt.type) === 'mcq' ? 'MCQ' : 'PDF Upload'} test "${test?.title || 'Test'}" was graded: ${parsed.data.marks}%`
   });
 
   await trackAnalyticsEvent({
@@ -609,6 +700,7 @@ export async function studentTestsQueue(req, res) {
 
   const tests = await Test.find({
     institutionId: req.auth.institutionId,
+    archivedAt: null,
     subjectId: { $in: profile.subjects },
     $or: [
       { assignedStudentIds: req.auth.userId },
@@ -671,11 +763,12 @@ export async function studentTestsQueue(req, res) {
     }));
     const withMeta = {
       ...test,
+      type: normalizeLegacyTestType(test.type),
       questions: sanitizedQuestions,
       questionPdfUrl: '',
       questionPdfName: '',
       sourcePdfName: '',
-      hasAnswerKey: Boolean(test.type === 'mcq' || test.answerKeyPdfUrl),
+      hasAnswerKey: Boolean(normalizeLegacyTestType(test.type) === 'mcq' || test.answerKeyPdfUrl),
       answerKeyPdfUrl: '',
       answerKeyPdfName: '',
       subjectName: subjectMap.get(test.subjectId.toString()) || '',
@@ -704,9 +797,12 @@ export async function studentSubmitAttempt(req, res) {
 
   const test = await Test.findOne({
     _id: testId,
-    institutionId: req.auth.institutionId
+    institutionId: req.auth.institutionId,
+    archivedAt: null
   }).lean();
   if (!test) return notFound(res, 'Test not found.');
+
+  const normalizedTestType = normalizeLegacyTestType(test.type);
 
   if (test.scheduledStartAt && test.scheduledEndAt) {
     const startAtMs = new Date(test.scheduledStartAt).getTime();
@@ -732,7 +828,7 @@ export async function studentSubmitAttempt(req, res) {
   let assignedMarks = null;
   let answers = [];
 
-  if (test.type === 'mcq') {
+  if (normalizedTestType === 'mcq') {
     const correctMark = Number(test.mcqCorrectMark ?? 1);
     const wrongMark = Number(test.mcqWrongMark ?? 0);
 
@@ -780,7 +876,7 @@ export async function studentSubmitAttempt(req, res) {
     studentId: req.auth.userId,
     teacherId: test.teacherId,
     testId: test._id,
-    type: test.type,
+    type: normalizedTestType,
     assignedMarks,
     scorePercent,
     correctCount,
@@ -812,7 +908,7 @@ export async function studentSubmitAttempt(req, res) {
       }
     }
 
-    let xpGain = test.type === 'mcq' ? 10 : 12;
+    let xpGain = normalizedTestType === 'mcq' ? 10 : 12;
     if (scorePercent != null) xpGain += Math.max(0, Math.round(scorePercent / 20));
     if (streakDays >= 3) xpGain += 2;
     if (streakDays >= 7) xpGain += 4;
@@ -849,7 +945,7 @@ export async function studentSubmitAttempt(req, res) {
     stage: 'activation',
     metadata: {
       testId: test._id.toString(),
-      testType: test.type,
+      testType: normalizedTestType,
       scorePercent: attempt.scorePercent,
       xpTotal: profile ? Number(profile.xp || 0) : 0
     }
@@ -880,7 +976,7 @@ export async function studentAttemptAnswerKey(req, res) {
     });
   }
 
-  if (attempt.type !== 'mcq') {
+  if (normalizeLegacyTestType(attempt.type) !== 'mcq') {
     return badRequest(res, 'Answer key is not available for this attempt yet.');
   }
 

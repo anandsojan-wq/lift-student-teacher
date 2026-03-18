@@ -1,23 +1,35 @@
 import { buildApp } from './app.js';
-import { connectDb, disconnectDb } from './config/db.js';
+import mongoose from 'mongoose';
+import { connectDb, disconnectDb, getDbStatus } from './config/db.js';
 import { env } from './config/env.js';
 
 const app = buildApp();
 let activeServer = null;
 let shuttingDown = false;
+let reconnectTimer = null;
+
+function scheduleReconnect(reason = 'database disconnected', attempt = 1) {
+  if (shuttingDown) return;
+  if (reconnectTimer) return;
+
+  const waitMs = Math.min(env.mongoRetryMs * Math.max(attempt, 1), 30000);
+  console.warn(`${reason}. Retrying database connection in ${waitMs}ms...`);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    void connectDbWithRetry(attempt + 1);
+  }, waitMs);
+}
 
 async function connectDbWithRetry(attempt = 1) {
+  if (shuttingDown) return;
+  if (getDbStatus() === 'connected' || getDbStatus() === 'connecting') return;
+
   try {
     await connectDb();
     console.log('Database connected.');
   } catch (error) {
-    const waitMs = Math.min(env.mongoRetryMs * Math.max(attempt, 1), 30000);
-    console.error(
-      `Database connection failed (attempt ${attempt}): ${error.message}. Retrying in ${waitMs}ms...`
-    );
-    setTimeout(() => {
-      void connectDbWithRetry(attempt + 1);
-    }, waitMs);
+    console.error(`Database connection failed (attempt ${attempt}): ${error.message}.`);
+    scheduleReconnect('Database connection failed', attempt);
   }
 }
 
@@ -74,6 +86,38 @@ process.on('SIGINT', () => {
 });
 process.on('SIGTERM', () => {
   void shutdown('SIGTERM');
+});
+
+mongoose.connection.on('disconnected', () => {
+  if (shuttingDown) return;
+  console.warn('Database connection lost.');
+  scheduleReconnect('Database connection lost');
+});
+
+mongoose.connection.on('error', (error) => {
+  if (shuttingDown) return;
+  console.error(`Database connection error: ${error.message}`);
+});
+
+process.on('unhandledRejection', (error) => {
+  const message = error?.message || String(error || '');
+  if (/PoolClearedOnNetworkError|MongoNetworkTimeoutError|server monitor timeout/i.test(message)) {
+    console.error(`Transient MongoDB rejection: ${message}`);
+    scheduleReconnect('Transient MongoDB network issue');
+    return;
+  }
+  console.error('Unhandled promise rejection:', error);
+});
+
+process.on('uncaughtException', (error) => {
+  const message = error?.message || String(error || '');
+  if (/PoolClearedOnNetworkError|MongoNetworkTimeoutError|server monitor timeout/i.test(message)) {
+    console.error(`Transient MongoDB exception: ${message}`);
+    scheduleReconnect('Transient MongoDB exception');
+    return;
+  }
+  console.error('Uncaught exception:', error);
+  process.exit(1);
 });
 
 start();

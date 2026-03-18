@@ -13,6 +13,10 @@ export function getDbStatus() {
 }
 
 export async function connectDb() {
+  if (mongoose.connection.readyState === 1 || mongoose.connection.readyState === 2) {
+    return mongoose.connection;
+  }
+
   await mongoose.connect(env.mongoUri, {
     serverSelectionTimeoutMS: env.mongoConnectTimeoutMs,
     connectTimeoutMS: env.mongoConnectTimeoutMs,
