@@ -15,6 +15,7 @@ import {
   teacherCreateResource,
   teacherDeleteResource,
   teacherListResources,
+  teacherTrashResource,
   teacherViewResource
 } from '../controllers/resource.controller.js';
 import {
@@ -25,6 +26,8 @@ import {
   teacherListAssessments,
   teacherCreateTest,
   teacherListTests
+  ,
+  teacherTrashTest
 } from '../controllers/test.controller.js';
 import {
   markNotificationsRead,
@@ -43,11 +46,13 @@ router.delete('/students/:studentId', deleteStudent);
 router.get('/resources', teacherListResources);
 router.get('/resources/:resourceId/view', teacherViewResource);
 router.post('/resources', teacherCreateResource);
+router.patch('/resources/:resourceId/trash', teacherTrashResource);
 router.delete('/resources/:resourceId', teacherDeleteResource);
 router.get('/tests', teacherListTests);
 router.get('/tests/live-stats', teacherLiveTestsStats);
 router.post('/tests', teacherCreateTest);
 router.patch('/tests/:testId/archive', teacherArchiveTest);
+router.patch('/tests/:testId/trash', teacherTrashTest);
 router.delete('/tests/:testId', teacherDeleteTest);
 router.get('/assessments', teacherListAssessments);
 router.patch('/assessments/:attemptId/grade', teacherGradeAttempt);

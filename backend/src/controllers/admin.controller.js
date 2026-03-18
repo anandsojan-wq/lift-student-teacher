@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { Institution } from '../models/Institution.js';
 import { Test } from '../models/Test.js';
 import { StudentProfile } from '../models/StudentProfile.js';
 import { Subject } from '../models/Subject.js';
@@ -102,6 +103,25 @@ const updateSubjectSchema = z
       ),
     'At least one field is required for update.'
   );
+
+const brandingSchema = z.object({
+  instituteName: z.string().trim().min(2, 'Institute name must be at least 2 characters.'),
+  logoUrl: z.string().trim().optional().or(z.literal('')),
+  accentColor: z
+    .string()
+    .trim()
+    .regex(/^#(?:[0-9a-fA-F]{6})$/, 'Accent color must be a valid hex code like #2b8be6.'),
+  footerText: z.string().trim().min(2, 'Footer text is required.').max(160)
+});
+
+function serializeBranding(institution) {
+  return {
+    instituteName: institution?.name || '',
+    logoUrl: institution?.branding?.logoUrl || '',
+    accentColor: institution?.branding?.accentColor || '#2b8be6',
+    footerText: institution?.branding?.footerText || 'Developed by LIFT Educations'
+  };
+}
 
 export async function createTeacher(req, res) {
   const parsed = createTeacherSchema.safeParse(req.body);
@@ -440,6 +460,51 @@ export async function dashboardSummary(req, res) {
       actionsToday
     }
   });
+}
+
+export async function getBranding(req, res) {
+  const institution = await Institution.findById(req.auth.institutionId).lean();
+  if (!institution) return notFound(res, 'Institution not found.');
+
+  return ok(res, {
+    branding: serializeBranding(institution)
+  });
+}
+
+export async function updateBranding(req, res) {
+  const parsed = brandingSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return badRequest(res, parsed.error.issues[0]?.message || 'Invalid branding payload.');
+  }
+
+  const institution = await Institution.findById(req.auth.institutionId);
+  if (!institution) return notFound(res, 'Institution not found.');
+
+  institution.name = parsed.data.instituteName;
+  institution.branding = {
+    ...(institution.branding || {}),
+    logoUrl: parsed.data.logoUrl || '',
+    accentColor: parsed.data.accentColor,
+    footerText: parsed.data.footerText
+  };
+
+  await institution.save();
+
+  await trackAnalyticsEvent({
+    institutionId: req.auth.institutionId,
+    userId: req.auth.userId,
+    role: 'admin',
+    eventType: 'institution_branding_updated',
+    stage: 'activation'
+  });
+
+  return ok(
+    res,
+    {
+      branding: serializeBranding(institution)
+    },
+    'Branding updated.'
+  );
 }
 
 export async function listSubjects(req, res) {

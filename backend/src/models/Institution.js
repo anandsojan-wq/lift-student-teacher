@@ -24,6 +24,11 @@ const institutionSchema = new mongoose.Schema(
       temporaryPassword: { type: String, default: '' },
       issuedAt: { type: Date, default: null }
     },
+    branding: {
+      logoUrl: { type: String, default: '' },
+      accentColor: { type: String, default: '#2b8be6' },
+      footerText: { type: String, default: 'Developed by LIFT Educations' }
+    },
     subscriptionEndsAt: { type: Date, default: null },
     isActive: { type: Boolean, default: true }
   },

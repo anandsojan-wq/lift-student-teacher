@@ -153,6 +153,7 @@ export async function teacherCreateClassPlan(req, res) {
       teacherId: req.auth.userId,
       subjectId: payload.subjectId,
       resourceType: payload.resource.resourceType,
+      resourceContext: 'class_plan',
       title: payload.resource.title,
       value: payload.resource.value,
       source: payload.resource.source,
@@ -225,7 +226,10 @@ export async function teacherListClassPlans(req, res) {
     Subject.find({ _id: { $in: plans.map((plan) => plan.subjectId) } })
       .select('name')
       .lean(),
-    Resource.find({ _id: { $in: plans.map((plan) => plan.resourceId).filter(Boolean) } })
+    Resource.find({
+      _id: { $in: plans.map((plan) => plan.resourceId).filter(Boolean) },
+      deletedAt: null
+    })
       .select('title resourceType value source')
       .lean()
   ]);
@@ -291,7 +295,10 @@ export async function studentTodayClasses(req, res) {
     User.find({ _id: { $in: plans.map((plan) => plan.teacherId) } })
       .select('fullName')
       .lean(),
-    Resource.find({ _id: { $in: plans.map((plan) => plan.resourceId).filter(Boolean) } })
+    Resource.find({
+      _id: { $in: plans.map((plan) => plan.resourceId).filter(Boolean) },
+      deletedAt: null
+    })
       .select('title resourceType value source')
       .lean()
   ]);

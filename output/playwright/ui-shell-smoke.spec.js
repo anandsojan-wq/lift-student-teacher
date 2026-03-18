@@ -1,6 +1,7 @@
 const { test, expect } = require('@playwright/test');
 
-const APP_URL = 'http://127.0.0.1:3000';
+const APP_URL = process.env.PLAYWRIGHT_APP_URL || 'http://127.0.0.1:3000';
+const API_URL = process.env.PLAYWRIGHT_API_URL || 'http://127.0.0.1:5050';
 const INSTITUTION_ID = 'LIFT-DEMO-1001';
 const ADMIN_USERNAME = 'admindemo';
 const ADMIN_PASSWORD = 'Admin@12345';
@@ -10,7 +11,13 @@ const STUDENT_USERNAME = 'studemo';
 const STUDENT_PASSWORD = 'Student@12345';
 
 async function login(page, roleButtonName, username, password) {
+  await page.context().clearCookies();
   await page.goto(APP_URL, { waitUntil: 'networkidle' });
+  await page.evaluate(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+  await page.reload({ waitUntil: 'networkidle' });
   await page.getByRole('button', { name: roleButtonName }).click();
   await page.getByRole('textbox', { name: 'Institution ID' }).fill(INSTITUTION_ID);
   await page.getByRole('textbox', { name: 'Username' }).fill(username);
@@ -27,7 +34,7 @@ test.describe('portal shell smoke', () => {
     });
 
     await login(page, "I'm an Admin", ADMIN_USERNAME, ADMIN_PASSWORD);
-    await expect(page.getByText('Welcome, Demo Admin')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('heading', { name: /Welcome, Demo Admin/ })).toBeVisible({ timeout: 30000 });
     await expect(page.getByRole('heading', { name: 'What Needs Action Today' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Courses Needing Attention' })).toBeVisible();
     await expect(page.getByText('Active Teachers')).toBeVisible();
@@ -66,6 +73,13 @@ test.describe('portal shell smoke', () => {
     await page.getByRole('button', { name: 'Cancel' }).click();
     await expect(page.getByRole('dialog', { name: 'Delete Course' })).toHaveCount(0);
 
+    await page.getByRole('button', { name: 'Branding' }).click();
+    await expect(page.getByRole('heading', { name: 'Institution Branding' })).toBeVisible();
+    await expect(page.getByLabel('Institute Name')).toBeVisible();
+    await expect(page.getByLabel('Accent Color')).toBeVisible();
+    await expect(page.getByLabel('Footer Text')).toBeVisible();
+    await expect(page.getByText('White-label Panel')).toBeVisible();
+
     expect(nativeDialogSeen).toBeFalsy();
   });
 
@@ -77,7 +91,7 @@ test.describe('portal shell smoke', () => {
     });
 
     await login(page, "I'm a Teacher", TEACHER_USERNAME, TEACHER_PASSWORD);
-    await expect(page.getByText('Welcome, Demo Teacher')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('heading', { name: /Welcome, Demo Teacher/ })).toBeVisible({ timeout: 30000 });
     await expect(page.locator('#runQaBtn')).toBeVisible();
 
     await page.getByText('Management', { exact: true }).click();
@@ -91,6 +105,8 @@ test.describe('portal shell smoke', () => {
 
     await page.getByRole('button', { name: 'Upload Resources' }).click();
     await expect(page.getByRole('heading', { name: 'Resource Library' })).toBeVisible();
+    await expect(page.getByLabel('Collection')).toBeVisible();
+    await expect(page.getByLabel('Status')).toBeVisible();
     await expect(page.getByRole('button', { name: 'View File' }).first()).toBeVisible();
     await page.getByRole('button', { name: 'View File' }).first().click();
     await expect(page.getByRole('dialog', { name: 'Teacher PDF Viewer' })).toBeVisible();
@@ -98,26 +114,24 @@ test.describe('portal shell smoke', () => {
     await page.getByRole('button', { name: 'Close' }).click();
     await expect(page.getByRole('dialog', { name: 'Teacher PDF Viewer' })).toHaveCount(0);
 
-    await page.getByRole('button', { name: 'Delete' }).first().click();
-    await expect(page.getByRole('dialog', { name: 'Delete Resource' })).toBeVisible();
+    await page.getByRole('button', { name: 'Move to Trash' }).first().click();
+    await expect(page.getByText('Resource moved to trash.')).toBeVisible();
+    await page.getByLabel('Status').selectOption('trashed');
+    await page.getByRole('button', { name: 'Delete Forever' }).first().click();
+    await expect(page.getByRole('dialog', { name: 'Delete Resource Forever' })).toBeVisible();
     await page.getByRole('button', { name: 'Cancel' }).click();
-    await expect(page.getByRole('dialog', { name: 'Delete Resource' })).toHaveCount(0);
+    await expect(page.getByRole('dialog', { name: 'Delete Resource Forever' })).toHaveCount(0);
 
     await page.getByText('Assessment', { exact: true }).click();
     await expect(page.locator('[data-teacher-tab="assessment_conduct"]:visible')).toBeVisible();
     await page.locator('[data-teacher-tab="assessment_conduct"]:visible').click();
     await expect(page.getByRole('heading', { name: 'Conduct Test' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Published Tests' })).toBeVisible();
-    await page.getByRole('button', { name: 'Delete' }).last().click();
-    await expect(page.getByRole('dialog', { name: 'Delete Test' })).toBeVisible();
-    await page.getByRole('button', { name: 'Cancel' }).click();
-    await expect(page.getByRole('dialog', { name: 'Delete Test' })).toHaveCount(0);
-
     expect(nativeDialogSeen).toBeFalsy();
   });
 
   test('teacher published tests search, archive, restore, and loading shell work', async ({ page }) => {
-    const title = `PW Archive ${Date.now()}`;
+    const titlePrefix = `PW Archive ${Date.now()}`;
 
     await page.route('**/api/teacher/tests**', async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -125,7 +139,7 @@ test.describe('portal shell smoke', () => {
     });
 
     await login(page, "I'm a Teacher", TEACHER_USERNAME, TEACHER_PASSWORD);
-    await expect(page.getByText('Welcome, Demo Teacher')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('heading', { name: /Welcome, Demo Teacher/ })).toBeVisible({ timeout: 30000 });
 
     await page.getByText('Assessment', { exact: true }).click();
     await page.locator('[data-teacher-tab="assessment_conduct"]:visible').click();
@@ -135,65 +149,79 @@ test.describe('portal shell smoke', () => {
     await expect(page.getByLabel('Filter by Type')).toBeVisible();
     await expect(page.getByLabel('Show')).toBeVisible();
 
-    await page.evaluate(async ({ title }) => {
-      const subjectRes = await fetch('http://127.0.0.1:5050/api/teacher/subjects', {
+    await page.evaluate(async ({ titlePrefix, apiUrl }) => {
+      const subjectRes = await fetch(`${apiUrl}/api/teacher/subjects`, {
         credentials: 'include'
       });
       const subjectPayload = await subjectRes.json();
       const subjectId = subjectPayload?.data?.subjects?.[0]?._id;
       if (!subjectId) throw new Error('No subject available for teacher.');
 
-      const createRes = await fetch('http://127.0.0.1:5050/api/teacher/tests', {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          subjectId,
-          title,
-          type: 'mcq',
-          durationMinutes: 5,
-          audienceMode: 'all',
-          questions: [
-            {
-              text: 'Playwright archive check question',
-              options: ['A', 'B', 'C', 'D'],
-              correctIndex: 0
-            }
-          ]
-        })
-      });
+      for (let index = 0; index < 12; index += 1) {
+        const createRes = await fetch(`${apiUrl}/api/teacher/tests`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            subjectId,
+            title: `${titlePrefix} ${index + 1}`,
+            type: 'mcq',
+            durationMinutes: 5,
+            audienceMode: 'all',
+            questions: [
+              {
+                text: `Playwright archive check question ${index + 1}`,
+                options: ['A', 'B', 'C', 'D'],
+                correctIndex: 0
+              }
+            ]
+          })
+        });
 
-      const payload = await createRes.json();
-      if (!createRes.ok) {
-        throw new Error(payload?.message || 'Failed to create test.');
+        const payload = await createRes.json();
+        if (!createRes.ok) {
+          throw new Error(payload?.message || 'Failed to create test.');
+        }
       }
-    }, { title });
+    }, { titlePrefix, apiUrl: API_URL });
 
-    await page.getByLabel('Search Tests').fill(title);
-    await expect(page.getByRole('cell', { name: title })).toBeVisible({ timeout: 30000 });
-    const row = page.locator('tr', { hasText: title }).first();
+    await page.getByLabel('Search Tests').fill(titlePrefix);
+    await expect(page.getByRole('cell', { name: `${titlePrefix} 12` })).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('button', { name: 'Load More Tests' })).toBeVisible();
+    await page.getByRole('button', { name: 'Load More Tests' }).click();
+
+    const allMatchingRows = page.locator('tbody tr', { hasText: titlePrefix });
+    await expect(allMatchingRows).toHaveCount(12);
+
+    const row = page.locator('tr', { hasText: `${titlePrefix} 12` }).first();
     await expect(row.getByText('Active')).toBeVisible();
 
     await row.getByRole('button', { name: 'Archive' }).click();
     await expect(page.getByText('Test archived.')).toBeVisible();
 
     await page.getByLabel('Show').selectOption('archived');
-    await expect(page.getByRole('cell', { name: title })).toBeVisible({ timeout: 30000 });
-    const archivedRow = page.locator('tr', { hasText: title }).first();
+    await expect(page.getByRole('cell', { name: `${titlePrefix} 12` })).toBeVisible({ timeout: 30000 });
+    const archivedRow = page.locator('tr', { hasText: `${titlePrefix} 12` }).first();
     await expect(archivedRow.getByText('Archived')).toBeVisible();
 
     await archivedRow.getByRole('button', { name: 'Restore' }).click();
     await expect(page.getByText('Test restored.')).toBeVisible();
 
     await page.getByLabel('Show').selectOption('active');
-    await expect(page.getByRole('cell', { name: title })).toBeVisible({ timeout: 30000 });
-    const restoredRow = page.locator('tr', { hasText: title }).first();
-    await restoredRow.getByRole('button', { name: 'Delete' }).click();
-    await expect(page.getByRole('dialog', { name: 'Delete Test' })).toBeVisible();
-    await page.getByRole('button', { name: 'Delete Test' }).click();
-    await expect(page.getByRole('cell', { name: title })).toHaveCount(0);
+    await expect(page.getByRole('cell', { name: `${titlePrefix} 12` })).toBeVisible({ timeout: 30000 });
+    const restoredRow = page.locator('tr', { hasText: `${titlePrefix} 12` }).first();
+    await restoredRow.getByRole('button', { name: 'Move to Trash' }).click();
+    await expect(page.getByText('Test moved to trash.')).toBeVisible();
+
+    await page.getByLabel('Show').selectOption('trashed');
+    await expect(page.getByRole('cell', { name: `${titlePrefix} 12` })).toBeVisible({ timeout: 30000 });
+    const trashedRow = page.locator('tr', { hasText: `${titlePrefix} 12` }).first();
+    await trashedRow.getByRole('button', { name: 'Delete Forever' }).click();
+    await expect(page.getByRole('dialog', { name: 'Delete Test Forever' })).toBeVisible();
+    await page.getByRole('dialog', { name: 'Delete Test Forever' }).getByRole('button', { name: 'Delete Forever' }).click();
+    await expect(page.getByRole('cell', { name: `${titlePrefix} 12` })).toHaveCount(0);
   });
 
   test('ended class plan no longer shows its resource to students', async ({ page }) => {
@@ -202,8 +230,8 @@ test.describe('portal shell smoke', () => {
       await login(page, "I'm a Teacher", TEACHER_USERNAME, TEACHER_PASSWORD);
       await expect(page.getByText('Welcome, Demo Teacher')).toBeVisible({ timeout: 30000 });
 
-      const result = await page.evaluate(async ({ title }) => {
-        const subjectsRes = await fetch('http://127.0.0.1:5050/api/teacher/subjects', {
+      const result = await page.evaluate(async ({ title, apiUrl }) => {
+        const subjectsRes = await fetch(`${apiUrl}/api/teacher/subjects`, {
           credentials: 'include'
         });
         const subjectsPayload = await subjectsRes.json();
@@ -214,7 +242,7 @@ test.describe('portal shell smoke', () => {
         const pad = (value) => String(value).padStart(2, '0');
         const scheduledDate = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
 
-        const createRes = await fetch('http://127.0.0.1:5050/api/teacher/class-plans', {
+        const createRes = await fetch(`${apiUrl}/api/teacher/class-plans`, {
           method: 'POST',
           credentials: 'include',
           headers: {
@@ -243,7 +271,7 @@ test.describe('portal shell smoke', () => {
         }
 
         return createPayload?.data?.plan?.id || '';
-      }, { title: classTitle });
+      }, { title: classTitle, apiUrl: API_URL });
 
       await page.getByRole('button', { name: 'Sign Out' }).click();
       return result;
@@ -276,7 +304,10 @@ test.describe('portal shell smoke', () => {
 
     await page.getByText('Learning', { exact: true }).click();
     await page.locator('[data-student-tab="resources"]:visible').click();
-    await expect(page.getByRole('heading', { name: 'Resources' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Resources', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Permanent Resources' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Class Materials' })).toBeVisible();
+    await expect(page.getByLabel('Collection')).toBeVisible();
 
     await page.getByText('Tests', { exact: true }).click();
     await page.locator('[data-student-tab="history"]:visible').click();

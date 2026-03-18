@@ -90,6 +90,20 @@ function clearAuthCookie(req, res) {
   });
 }
 
+function serializeInstitution(institution) {
+  if (!institution) return null;
+  return {
+    id: institution._id,
+    name: institution.name,
+    institutionId: institution.institutionId,
+    branding: {
+      logoUrl: institution.branding?.logoUrl || '',
+      accentColor: institution.branding?.accentColor || '#2b8be6',
+      footerText: institution.branding?.footerText || 'Developed by LIFT Educations'
+    }
+  };
+}
+
 export async function bootstrap(req, res) {
   const parsed = bootstrapSchema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid bootstrap payload.');
@@ -222,7 +236,8 @@ export async function login(req, res) {
       username: user.username,
       fullName: user.fullName,
       mustChangePassword: user.mustChangePassword
-    }
+    },
+    institution: serializeInstitution(institution)
   });
 }
 
@@ -246,13 +261,7 @@ export async function me(req, res) {
       phone: user.phone,
       mustChangePassword: user.mustChangePassword
     },
-    institution: institution
-      ? {
-          id: institution._id,
-          name: institution.name,
-          institutionId: institution.institutionId
-        }
-      : null
+    institution: serializeInstitution(institution)
   });
 }
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ClassPlan } from '../models/ClassPlan.js';
 import { Resource } from '../models/Resource.js';
 import { StudentProfile } from '../models/StudentProfile.js';
 import { Subject } from '../models/Subject.js';
@@ -66,6 +67,18 @@ const teacherCreateResourceSchema = z.object({
   }
 });
 
+const resourceTrashSchema = z.object({
+  trashed: z.boolean().default(true)
+});
+
+function parsePagination(query, defaultLimit = 12, maxLimit = 60) {
+  const rawLimit = Number.parseInt(String(query?.limit || defaultLimit), 10);
+  const rawOffset = Number.parseInt(String(query?.offset || 0), 10);
+  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), maxLimit) : defaultLimit;
+  const offset = Number.isFinite(rawOffset) ? Math.max(rawOffset, 0) : 0;
+  return { limit, offset };
+}
+
 function buildSearchQuery(q) {
   const clean = String(q || '').trim();
   if (!clean) return null;
@@ -93,6 +106,90 @@ function buildProtectedResourceFileName(resource) {
   return title.toLowerCase().endsWith(ext) ? title : `${title}${ext}`;
 }
 
+function normalizeResourceStatus(status) {
+  const normalized = String(status || 'active').trim().toLowerCase();
+  if (normalized === 'trashed' || normalized === 'all') return normalized;
+  return 'active';
+}
+
+function normalizeResourceContext(context) {
+  const normalized = String(context || '').trim().toLowerCase();
+  if (normalized === 'library' || normalized === 'class_plan') return normalized;
+  if (normalized === 'all') return 'all';
+  return '';
+}
+
+function applyResourceContext(query, context, classPlanResourceIds = []) {
+  if (!context || context === 'all') return;
+
+  const hasClassPlanIds = Array.isArray(classPlanResourceIds) && classPlanResourceIds.length > 0;
+
+  if (context === 'class_plan') {
+    if (hasClassPlanIds) {
+      query.$or = [
+        { resourceContext: 'class_plan' },
+        { _id: { $in: classPlanResourceIds } }
+      ];
+    } else {
+      query.resourceContext = 'class_plan';
+    }
+    return;
+  }
+
+  const libraryContextQuery = {
+    $or: [{ resourceContext: 'library' }, { resourceContext: null }, { resourceContext: { $exists: false } }]
+  };
+
+  if (hasClassPlanIds) {
+    query.$and = [...(query.$and || []), libraryContextQuery, { _id: { $nin: classPlanResourceIds } }];
+    return;
+  }
+
+  Object.assign(query, libraryContextQuery);
+}
+
+function applyResourceStatus(query, status) {
+  if (status === 'trashed') {
+    query.deletedAt = { $ne: null };
+    return;
+  }
+  if (status === 'all') return;
+  query.deletedAt = null;
+}
+
+function buildResourceResponse(resource, { subjectMap, teacherMap, classPlanMap, viewer = 'student' } = {}) {
+  const subjectName = subjectMap?.get(resource.subjectId?.toString()) || '';
+  const teacherName = teacherMap?.get(resource.teacherId?.toString()) || '';
+  const classPlan = classPlanMap?.get(resource._id?.toString()) || null;
+  const effectiveResourceContext = resource.resourceContext || (classPlan ? 'class_plan' : 'library');
+  const payload = {
+    ...resource,
+    subjectName,
+    teacherName,
+    resourceContext: effectiveResourceContext,
+    deletedAt: resource.deletedAt || null,
+    classPlan: classPlan
+      ? {
+          id: classPlan._id,
+          title: classPlan.title,
+          scheduledDate: classPlan.scheduledDate,
+          startTime: classPlan.startTime || '',
+          endTime: classPlan.endTime || ''
+        }
+      : null
+  };
+
+  if (isStudentProtectedDocument(resource)) {
+    payload.value = '';
+    payload.viewUrl =
+      viewer === 'teacher'
+        ? teacherResourceViewUrl(resource._id)
+        : studentResourceViewUrl(resource._id);
+  }
+
+  return payload;
+}
+
 export async function teacherCreateResource(req, res) {
   const parsed = teacherCreateResourceSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -111,6 +208,7 @@ export async function teacherCreateResource(req, res) {
     teacherId: req.auth.userId,
     subjectId: payload.subjectId,
     resourceType: payload.resourceType,
+    resourceContext: 'library',
     title: payload.title,
     value: payload.value,
     source: payload.source,
@@ -151,6 +249,9 @@ export async function teacherListResources(req, res) {
   const subjectId = String(req.query.subjectId || '').trim();
   const resourceType = String(req.query.resourceType || '').trim();
   const q = String(req.query.q || '').trim();
+  const status = normalizeResourceStatus(req.query.status);
+  const context = normalizeResourceContext(req.query.context);
+  const { limit, offset } = parsePagination(req.query, 12, 80);
 
   const query = {
     institutionId: req.auth.institutionId,
@@ -158,21 +259,76 @@ export async function teacherListResources(req, res) {
   };
   if (subjectId) query.subjectId = subjectId;
   if (resourceType) query.resourceType = resourceType;
+  applyResourceStatus(query, status);
 
   const search = buildSearchQuery(q);
   if (search) Object.assign(query, search);
 
-  const resources = await Resource.find(query).sort({ createdAt: -1 }).lean();
-  const enriched = resources.map((resource) => ({
-    ...resource,
-    ...(isStudentProtectedDocument(resource)
-      ? {
-          value: '',
-          viewUrl: teacherResourceViewUrl(resource._id)
-        }
-      : {})
-  }));
-  return ok(res, { resources: enriched });
+  const classPlans = await ClassPlan.find({
+    institutionId: req.auth.institutionId,
+    teacherId: req.auth.userId,
+    resourceId: { $ne: null }
+  })
+    .select('resourceId title scheduledDate startTime endTime')
+    .lean();
+
+  const classPlanResourceIds = classPlans
+    .map((plan) => plan.resourceId)
+    .filter(Boolean);
+  applyResourceContext(query, context, classPlanResourceIds);
+
+  const [resources, total, subjects] = await Promise.all([
+    Resource.find(query).sort({ createdAt: -1 }).skip(offset).limit(limit).lean(),
+    Resource.countDocuments(query),
+    Subject.find({ institutionId: req.auth.institutionId }).select('name').lean()
+  ]);
+
+  const subjectMap = new Map(subjects.map((item) => [item._id.toString(), item.name]));
+  const classPlanMap = new Map(
+    classPlans
+      .filter((plan) => plan.resourceId)
+      .map((plan) => [plan.resourceId.toString(), plan])
+  );
+
+  return ok(res, {
+    resources: resources.map((resource) =>
+      buildResourceResponse(resource, { subjectMap, classPlanMap, viewer: 'teacher' })
+    ),
+    summary: {
+      total,
+      shownCount: resources.length,
+      limit,
+      offset,
+      hasMore: offset + resources.length < total
+    }
+  });
+}
+
+export async function teacherTrashResource(req, res) {
+  const parsed = resourceTrashSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return badRequest(res, parsed.error.issues[0]?.message || 'Invalid trash payload.');
+  }
+
+  const resource = await Resource.findOne({
+    _id: req.params.resourceId,
+    institutionId: req.auth.institutionId,
+    teacherId: req.auth.userId
+  });
+  if (!resource) return notFound(res, 'Resource not found.');
+
+  resource.deletedAt = parsed.data.trashed ? new Date() : null;
+  await resource.save();
+  return ok(
+    res,
+    {
+      resource: {
+        id: resource._id,
+        deletedAt: resource.deletedAt
+      }
+    },
+    parsed.data.trashed ? 'Resource moved to trash.' : 'Resource restored.'
+  );
 }
 
 export async function teacherDeleteResource(req, res) {
@@ -182,16 +338,23 @@ export async function teacherDeleteResource(req, res) {
     teacherId: req.auth.userId
   });
   if (!resource) return notFound(res, 'Resource not found.');
+  if (!resource.deletedAt) {
+    resource.deletedAt = new Date();
+    await resource.save();
+    return ok(res, {}, 'Resource moved to trash.');
+  }
 
+  await ClassPlan.updateMany({ resourceId: resource._id }, { $set: { resourceId: null } });
   await resource.deleteOne();
-  return ok(res, {}, 'Resource deleted.');
+  return ok(res, {}, 'Resource deleted permanently.');
 }
 
 export async function teacherViewResource(req, res) {
   const resource = await Resource.findOne({
     _id: req.params.resourceId,
     institutionId: req.auth.institutionId,
-    teacherId: req.auth.userId
+    teacherId: req.auth.userId,
+    deletedAt: null
   })
     .select('title resourceType value source')
     .lean();
@@ -234,7 +397,8 @@ export async function studentListResources(req, res) {
 
   const query = {
     institutionId: req.auth.institutionId,
-    subjectId: { $in: subjectIds }
+    subjectId: { $in: subjectIds },
+    deletedAt: null
   };
   if (profile.teacherId) {
     query.teacherId = profile.teacherId;
@@ -242,11 +406,28 @@ export async function studentListResources(req, res) {
 
   const resourceType = String(req.query.resourceType || '').trim();
   if (resourceType) query.resourceType = resourceType;
+  const context = normalizeResourceContext(req.query.context);
+  const { limit, offset } = parsePagination(req.query, 18, 80);
 
   const search = buildSearchQuery(req.query.q);
   if (search) Object.assign(query, search);
 
-  const resources = await Resource.find(query).sort({ createdAt: -1 }).lean();
+  const classPlans = await ClassPlan.find({
+    institutionId: req.auth.institutionId,
+    resourceId: { $ne: null }
+  })
+    .select('resourceId title scheduledDate startTime endTime')
+    .lean();
+
+  const classPlanResourceIds = classPlans
+    .map((plan) => plan.resourceId)
+    .filter(Boolean);
+  applyResourceContext(query, context, classPlanResourceIds);
+
+  const [resources, total] = await Promise.all([
+    Resource.find(query).sort({ createdAt: -1 }).skip(offset).limit(limit).lean(),
+    Resource.countDocuments(query)
+  ]);
 
   const [subjects, teachers] = await Promise.all([
     Subject.find({ _id: { $in: resources.map((item) => item.subjectId) } })
@@ -260,19 +441,26 @@ export async function studentListResources(req, res) {
   const subjectMap = new Map(subjects.map((item) => [item._id.toString(), item.name]));
   const teacherMap = new Map(teachers.map((item) => [item._id.toString(), item.fullName]));
 
-  const enriched = resources.map((resource) => ({
-    ...resource,
-    subjectName: subjectMap.get(resource.subjectId.toString()) || '',
-    teacherName: teacherMap.get(resource.teacherId.toString()) || '',
-    ...(isStudentProtectedDocument(resource)
-      ? {
-          value: '',
-          viewUrl: studentResourceViewUrl(resource._id)
-        }
-      : {})
-  }));
+  const classPlanMap = new Map(
+    classPlans
+      .filter((plan) => plan.resourceId)
+      .map((plan) => [plan.resourceId.toString(), plan])
+  );
 
-  return ok(res, { resources: enriched });
+  const enriched = resources.map((resource) =>
+    buildResourceResponse(resource, { subjectMap, teacherMap, classPlanMap, viewer: 'student' })
+  );
+
+  return ok(res, {
+    resources: enriched,
+    summary: {
+      total,
+      shownCount: enriched.length,
+      limit,
+      offset,
+      hasMore: offset + enriched.length < total
+    }
+  });
 }
 
 export async function studentViewResource(req, res) {
@@ -284,7 +472,8 @@ export async function studentViewResource(req, res) {
   const query = {
     _id: req.params.resourceId,
     institutionId: req.auth.institutionId,
-    subjectId: { $in: profile.subjects }
+    subjectId: { $in: profile.subjects },
+    deletedAt: null
   };
   if (profile.teacherId) {
     query.teacherId = profile.teacherId;

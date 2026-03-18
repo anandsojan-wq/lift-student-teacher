@@ -5,10 +5,12 @@ import {
   deleteSubject,
   deleteTeacher,
   dashboardSummary,
+  getBranding,
   listSubjects,
   listStudents,
   listTeachers,
   resetTeacherPassword,
+  updateBranding,
   updateSubject,
   updateTeacher,
   updateSubjectSyllabus
@@ -25,6 +27,8 @@ const router = Router();
 
 router.use(requireAuth, requireRole('admin'));
 router.get('/summary', dashboardSummary);
+router.get('/branding', getBranding);
+router.patch('/branding', updateBranding);
 router.get('/analytics', adminAnalytics);
 router.get('/automations/logs', adminAutomationLogs);
 router.get('/subjects', listSubjects);

@@ -48,6 +48,18 @@ const archiveTestSchema = z.object({
   archived: z.boolean().default(true)
 });
 
+const trashTestSchema = z.object({
+  trashed: z.boolean().default(true)
+});
+
+function parsePagination(query, defaultLimit = 10, maxLimit = 50) {
+  const rawLimit = Number.parseInt(String(query?.limit || defaultLimit), 10);
+  const rawOffset = Number.parseInt(String(query?.offset || 0), 10);
+  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), maxLimit) : defaultLimit;
+  const offset = Number.isFinite(rawOffset) ? Math.max(rawOffset, 0) : 0;
+  return { limit, offset };
+}
+
 function normalizeLegacyTestType(type) {
   const normalized = String(type || '').trim().toLowerCase();
   if (!normalized) return '';
@@ -66,7 +78,8 @@ function mapTestForResponse(test) {
   return {
     ...test,
     type: normalizeLegacyTestType(test?.type),
-    archivedAt: test?.archivedAt || null
+    archivedAt: test?.archivedAt || null,
+    deletedAt: test?.deletedAt || null
   };
 }
 
@@ -299,6 +312,7 @@ export async function teacherListTests(req, res) {
   const q = String(req.query.q || '').trim();
   const status = String(req.query.status || 'active').trim().toLowerCase();
   const requestedType = String(req.query.type || '').trim();
+  const { limit, offset } = parsePagination(req.query, 10, 60);
   const typeQuery = toSupportedTestTypeQuery(requestedType);
   const baseQuery = {
     institutionId: req.auth.institutionId,
@@ -308,20 +322,29 @@ export async function teacherListTests(req, res) {
   if (typeQuery) baseQuery.type = typeQuery;
   if (q) baseQuery.title = { $regex: escapeRegex(q), $options: 'i' };
 
-  const activeQuery = { ...baseQuery, archivedAt: null };
-  const archivedQuery = { ...baseQuery, archivedAt: { $ne: null } };
+  const activeQuery = { ...baseQuery, archivedAt: null, deletedAt: null };
+  const archivedQuery = { ...baseQuery, archivedAt: { $ne: null }, deletedAt: null };
+  const trashedQuery = { ...baseQuery, deletedAt: { $ne: null } };
   const listQuery =
-    status === 'archived'
+    status === 'trashed'
+      ? trashedQuery
+      : status === 'archived'
       ? archivedQuery
       : status === 'all'
         ? baseQuery
         : activeQuery;
-  const sortQuery = status === 'archived' ? { archivedAt: -1, createdAt: -1 } : { archivedAt: 1, createdAt: -1 };
+  const sortQuery =
+    status === 'trashed'
+      ? { deletedAt: -1, createdAt: -1 }
+      : status === 'archived'
+        ? { archivedAt: -1, createdAt: -1 }
+        : { archivedAt: 1, createdAt: -1 };
 
-  const [tests, activeCount, archivedCount, totalCount] = await Promise.all([
-    Test.find(listQuery).sort(sortQuery).lean(),
+  const [tests, activeCount, archivedCount, trashedCount, totalCount] = await Promise.all([
+    Test.find(listQuery).sort(sortQuery).skip(offset).limit(limit).lean(),
     Test.countDocuments(activeQuery),
     Test.countDocuments(archivedQuery),
+    Test.countDocuments(trashedQuery),
     Test.countDocuments(baseQuery)
   ]);
 
@@ -331,7 +354,11 @@ export async function teacherListTests(req, res) {
       shownCount: tests.length,
       activeCount,
       archivedCount,
-      totalCount
+      trashedCount,
+      totalCount,
+      limit,
+      offset,
+      hasMore: offset + tests.length < totalCount
     }
   });
 }
@@ -345,7 +372,8 @@ export async function teacherArchiveTest(req, res) {
   const test = await Test.findOne({
     _id: req.params.testId,
     institutionId: req.auth.institutionId,
-    teacherId: req.auth.userId
+    teacherId: req.auth.userId,
+    deletedAt: null
   });
 
   if (!test) return notFound(res, 'Test not found.');
@@ -365,6 +393,38 @@ export async function teacherArchiveTest(req, res) {
   );
 }
 
+export async function teacherTrashTest(req, res) {
+  const parsed = trashTestSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return badRequest(res, parsed.error.issues[0]?.message || 'Invalid trash payload.');
+  }
+
+  const test = await Test.findOne({
+    _id: req.params.testId,
+    institutionId: req.auth.institutionId,
+    teacherId: req.auth.userId
+  });
+
+  if (!test) return notFound(res, 'Test not found.');
+
+  test.deletedAt = parsed.data.trashed ? new Date() : null;
+  if (parsed.data.trashed) {
+    test.archivedAt = null;
+  }
+  await test.save();
+
+  return ok(
+    res,
+    {
+      test: {
+        id: test._id,
+        deletedAt: test.deletedAt
+      }
+    },
+    parsed.data.trashed ? 'Test moved to trash.' : 'Test restored.'
+  );
+}
+
 export async function teacherDeleteTest(req, res) {
   const test = await Test.findOne({
     _id: req.params.testId,
@@ -373,6 +433,13 @@ export async function teacherDeleteTest(req, res) {
   });
 
   if (!test) return notFound(res, 'Test not found.');
+
+  if (!test.deletedAt) {
+    test.deletedAt = new Date();
+    test.archivedAt = null;
+    await test.save();
+    return ok(res, {}, 'Test moved to trash.');
+  }
 
   await Attempt.deleteMany({
     institutionId: req.auth.institutionId,
@@ -389,10 +456,12 @@ export async function teacherListAssessments(req, res) {
   const type = String(req.query.type || '').trim();
   const status = String(req.query.status || '').trim().toLowerCase();
   const q = String(req.query.q || '').trim();
+  const { limit, offset } = parsePagination(req.query, 10, 60);
 
   const testQuery = {
     institutionId: req.auth.institutionId,
-    teacherId: req.auth.userId
+    teacherId: req.auth.userId,
+    deletedAt: null
   };
   if (subjectId) testQuery.subjectId = subjectId;
   if (type) testQuery.type = toSupportedTestTypeQuery(type);
@@ -415,7 +484,18 @@ export async function teacherListAssessments(req, res) {
   const attempts = await Attempt.find(attemptQuery)
     .sort({ createdAt: -1 })
     .lean();
-  if (!attempts.length) return ok(res, { assessments: [] });
+  if (!attempts.length) {
+    return ok(res, {
+      assessments: [],
+      summary: {
+        total: 0,
+        shownCount: 0,
+        limit,
+        offset,
+        hasMore: false
+      }
+    });
+  }
 
   const students = await User.find({
     _id: { $in: attempts.map((item) => item.studentId) },
@@ -491,7 +571,17 @@ export async function teacherListAssessments(req, res) {
       };
     });
 
-  return ok(res, { assessments });
+  const pagedAssessments = assessments.slice(offset, offset + limit);
+  return ok(res, {
+    assessments: pagedAssessments,
+    summary: {
+      total: assessments.length,
+      shownCount: pagedAssessments.length,
+      limit,
+      offset,
+      hasMore: offset + pagedAssessments.length < assessments.length
+    }
+  });
 }
 
 export async function teacherLiveTestsStats(req, res) {
@@ -502,6 +592,7 @@ export async function teacherLiveTestsStats(req, res) {
     institutionId: req.auth.institutionId,
     teacherId: req.auth.userId,
     archivedAt: null,
+    deletedAt: null,
     scheduledStartAt: { $ne: null, $lte: now },
     scheduledEndAt: { $ne: null, $gte: now }
   })
@@ -701,6 +792,7 @@ export async function studentTestsQueue(req, res) {
   const tests = await Test.find({
     institutionId: req.auth.institutionId,
     archivedAt: null,
+    deletedAt: null,
     subjectId: { $in: profile.subjects },
     $or: [
       { assignedStudentIds: req.auth.userId },
@@ -798,7 +890,8 @@ export async function studentSubmitAttempt(req, res) {
   const test = await Test.findOne({
     _id: testId,
     institutionId: req.auth.institutionId,
-    archivedAt: null
+    archivedAt: null,
+    deletedAt: null
   }).lean();
   if (!test) return notFound(res, 'Test not found.');
 

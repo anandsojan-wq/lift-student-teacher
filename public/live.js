@@ -10,6 +10,8 @@ const MCQ_MIN_QUESTION_COUNT = 1;
 const MCQ_MAX_QUESTION_COUNT = 100;
 const MCQ_DEFAULT_DURATION_MINUTES = 5;
 const NAV_TRANSITION_MS = 220;
+const DEFAULT_PAGE_SIZE = 10;
+const DEFAULT_RESOURCE_PAGE_SIZE = 12;
 
 if (typeof window !== 'undefined' && window.pdfjsLib?.GlobalWorkerOptions) {
   window.pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -51,6 +53,9 @@ const state = {
   teacherSubjectFilter: '',
   teacherResourceSearch: '',
   teacherResourceType: '',
+  teacherResourceStatus: 'active',
+  teacherResourceContext: 'library',
+  teacherResourceOffset: 0,
   teacherResourceCreateType: 'pdf',
   teacherResourceSubjectId: '',
   teacherTestSubjectId: '',
@@ -58,6 +63,7 @@ const state = {
   teacherPublishedTestSubjectId: '',
   teacherPublishedTestType: '',
   teacherPublishedTestStatus: 'active',
+  teacherPublishedTestOffset: 0,
   teacherTestType: 'mcq',
   teacherMcqQuestionCount: '',
   teacherMcqDurationMinutes: MCQ_DEFAULT_DURATION_MINUTES,
@@ -78,13 +84,17 @@ const state = {
   teacherAssessmentType: '',
   teacherAssessmentStatus: 'pending',
   teacherAssessmentQuery: '',
+  teacherAssessmentOffset: 0,
   teacherPdfViewer: null,
   studentResourceSearch: '',
   studentResourceType: '',
   studentResourceSubjectId: '',
+  studentResourceContext: 'all',
+  studentResourceOffset: 0,
   studentSyllabusSubjectId: '',
   studentPdfViewer: null,
   adminDialog: null,
+  adminBrandingDraft: null,
   appDialog: null,
   qaReports: {
     admin: null,
@@ -200,7 +210,8 @@ function saveSession(session, remember = state.authRememberMe) {
   const safeSession = {
     token: '',
     user: session.user,
-    institutionId: session.institutionId
+    institutionId: session.institutionId,
+    institution: session.institution || null
   };
   const serialized = JSON.stringify(safeSession);
   const shouldRemember = Boolean(remember);
@@ -232,6 +243,9 @@ function resetUiStateOnLogout() {
   state.teacherSubjectFilter = '';
   state.teacherResourceSearch = '';
   state.teacherResourceType = '';
+  state.teacherResourceStatus = 'active';
+  state.teacherResourceContext = 'library';
+  state.teacherResourceOffset = 0;
   state.teacherResourceCreateType = 'pdf';
   state.teacherResourceSubjectId = '';
   state.teacherTestSubjectId = '';
@@ -239,6 +253,7 @@ function resetUiStateOnLogout() {
   state.teacherPublishedTestSubjectId = '';
   state.teacherPublishedTestType = '';
   state.teacherPublishedTestStatus = 'active';
+  state.teacherPublishedTestOffset = 0;
   state.teacherTestType = 'mcq';
   state.teacherMcqQuestionCount = '';
   state.teacherMcqDurationMinutes = MCQ_DEFAULT_DURATION_MINUTES;
@@ -259,12 +274,16 @@ function resetUiStateOnLogout() {
   state.teacherAssessmentType = '';
   state.teacherAssessmentStatus = 'pending';
   state.teacherAssessmentQuery = '';
+  state.teacherAssessmentOffset = 0;
   state.teacherPdfViewer = null;
   state.studentResourceSearch = '';
   state.studentResourceType = '';
   state.studentResourceSubjectId = '';
+  state.studentResourceContext = 'all';
+  state.studentResourceOffset = 0;
   state.studentSyllabusSubjectId = '';
   state.studentPdfViewer = null;
+  state.adminBrandingDraft = null;
   state.qaReports = {
     admin: null,
     teacher: null,
@@ -953,8 +972,54 @@ function escapeHtml(value) {
     .replace(/'/g, '&#039;');
 }
 
+function getInstitutionBranding() {
+  return {
+    logoUrl: state.session?.institution?.branding?.logoUrl || '',
+    accentColor: state.session?.institution?.branding?.accentColor || '#2b8be6',
+    footerText:
+      state.session?.institution?.branding?.footerText || 'Developed by LIFT Educations'
+  };
+}
+
+function getInstitutionName() {
+  return state.session?.institution?.name || 'LIFT Educations';
+}
+
+function applyBrandTheme() {
+  const root = document.documentElement;
+  if (!root) return;
+  const accentColor = getInstitutionBranding().accentColor;
+  root.style.setProperty('--brand-accent', accentColor);
+  const themeColor = document.querySelector('meta[name="theme-color"]');
+  if (themeColor) {
+    themeColor.setAttribute('content', accentColor);
+  }
+}
+
+function footerTextMarkup() {
+  return escapeHtml(getInstitutionBranding().footerText);
+}
+
+function dashboardFooterMarkup() {
+  return `
+    <footer class="dashboard-footer">
+      <span>${escapeHtml(getInstitutionName())}</span>
+      <span>${footerTextMarkup()}</span>
+    </footer>
+  `;
+}
+
 function logoMarkup(compact = false) {
-  return '';
+  const logoUrl = String(getInstitutionBranding().logoUrl || '').trim();
+  const institutionName = getInstitutionName();
+  if (!logoUrl) return '';
+
+  return `
+    <div class="brand-lockup ${compact ? 'compact' : ''}">
+      <img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(institutionName)} logo" class="brand-lockup-logo" />
+      ${compact ? '' : `<span class="brand-lockup-name">${escapeHtml(institutionName)}</span>`}
+    </div>
+  `;
 }
 
 function roleLabel(role) {
@@ -1176,6 +1241,7 @@ function adminNavMarkup(activeTab) {
       </div>
     </details>
 
+    <button class="nav-tab ${activeTab === 'branding' ? 'active' : ''}" data-admin-tab="branding">Branding</button>
     <button class="nav-tab ${activeTab === 'accounts' ? 'active' : ''}" data-admin-tab="accounts">Accounts</button>
   `;
 }
@@ -1290,6 +1356,7 @@ function renderWorkspaceLoading({ title, detail, navMarkup }) {
           </article>
         </section>
       </main>
+      ${dashboardFooterMarkup()}
     </div>
   `;
 }
@@ -1453,7 +1520,54 @@ function adminCourseAttentionMarkup(summary) {
     .join('');
 }
 
+function emptyStateMarkup({ title, detail, actionLabel = '', actionAttr = '', icon = '○' } = {}) {
+  return `
+    <article class="empty-state-card">
+      <span class="empty-state-icon">${escapeHtml(icon)}</span>
+      <div>
+        <p><strong>${escapeHtml(title || 'Nothing here yet')}</strong></p>
+        <p class="muted">${escapeHtml(detail || 'Add something here to get started.')}</p>
+        ${
+          actionLabel && actionAttr
+            ? `<button type="button" class="mini-btn empty-state-action" ${actionAttr}>${escapeHtml(actionLabel)}</button>`
+            : ''
+        }
+      </div>
+    </article>
+  `;
+}
+
+function loadMoreMarkup(summary, attrName, label = 'Load more') {
+  const hasMore = Boolean(summary?.hasMore);
+  if (!hasMore) return '';
+  return `
+    <div class="load-more-row">
+      <button type="button" class="cta-soft" ${attrName}="1">${escapeHtml(label)}</button>
+    </div>
+  `;
+}
+
+function resourceContextLabel(resource) {
+  return resource?.resourceContext === 'class_plan' ? 'Class Material' : 'Permanent Resource';
+}
+
+function resourceContextBadge(resource) {
+  const isClassMaterial = resource?.resourceContext === 'class_plan';
+  return `<span class="status-badge ${isClassMaterial ? 'pending' : 'done'}">${escapeHtml(
+    resourceContextLabel(resource)
+  )}</span>`;
+}
+
+function assessmentStatusBadge(attempt) {
+  const label = attempt?.status === 'graded' ? 'Completed' : 'Pending Review';
+  const className = attempt?.status === 'graded' ? 'done' : 'pending';
+  return `<span class="status-badge ${className}">${escapeHtml(label)}</span>`;
+}
+
 function getPublishedTestStatus(test) {
+  if (test?.deletedAt) {
+    return { label: 'Trashed', className: 'warn' };
+  }
   if (test?.archivedAt) {
     return { label: 'Archived', className: 'neutral' };
   }
@@ -1463,7 +1577,7 @@ function getPublishedTestStatus(test) {
   const endAt = test?.scheduledEndAt ? new Date(test.scheduledEndAt).getTime() : Number.NaN;
   if (Number.isFinite(startAt) && Number.isFinite(endAt)) {
     if (now < startAt) return { label: 'Scheduled', className: 'pending' };
-    if (now > endAt) return { label: 'Closed', className: 'warn' };
+    if (now > endAt) return { label: 'Expired', className: 'warn' };
     return { label: 'Live', className: 'done' };
   }
 
@@ -2365,6 +2479,7 @@ function bindAccountPasswordForm() {
 
 function renderWelcome() {
   clearAttemptTimer();
+  applyBrandTheme();
   beginNavTransition();
 
   app.innerHTML = `
@@ -2388,7 +2503,7 @@ function renderWelcome() {
         </div>
       </div>
 
-      <footer class="hero-footer">Developed by LIFT Educations</footer>
+      <footer class="hero-footer">${footerTextMarkup()}</footer>
     </section>
   `;
 
@@ -2400,6 +2515,7 @@ function renderWelcome() {
 
 function renderLogin(role) {
   clearAttemptTimer();
+  applyBrandTheme();
   beginNavTransition();
   const loginHint = getLoginHint(role);
 
@@ -2441,7 +2557,7 @@ function renderLogin(role) {
           <p class="auth-note" id="loginStatus"></p>
         </div>
       </div>
-      <footer class="hero-footer">Developed by LIFT Educations</footer>
+      <footer class="hero-footer">${footerTextMarkup()}</footer>
     </section>
   `;
 
@@ -2471,7 +2587,8 @@ function renderLogin(role) {
 
         saveSession({
           user: result.data.user,
-          institutionId
+          institutionId,
+          institution: result.data.institution || null
         }, rememberLogin);
         updateLoginHint(role, institutionId, username, rememberLogin);
 
@@ -2505,6 +2622,7 @@ async function renderAdminDashboard() {
     'courses_create',
     'courses_edit',
     'courses_delete',
+    'branding',
     'accounts'
   ]);
   if (!allowedTabs.has(state.adminTab)) {
@@ -2531,13 +2649,14 @@ async function renderAdminDashboard() {
   const shouldLoadSummary = state.adminTab === 'dashboard';
   const shouldLoadTeachers = Boolean(teacherMode);
   const shouldLoadSubjects = state.adminTab === 'students_view' || Boolean(courseMode);
+  const shouldLoadBranding = state.adminTab === 'branding';
 
   const studentsQuery = toQueryString({
     q: state.adminStudentQuery,
     subjectId: state.adminSubjectFilter
   });
 
-  const [summaryResult, teachersResult, subjectsResult, studentsResult, analyticsResult] =
+  const [summaryResult, teachersResult, subjectsResult, studentsResult, analyticsResult, brandingResult] =
     await Promise.all([
       shouldLoadSummary
         ? api('/admin/summary')
@@ -2557,10 +2676,11 @@ async function renderAdminDashboard() {
           }),
       shouldLoadTeachers ? api('/admin/teachers') : Promise.resolve({ data: { teachers: [] } }),
       shouldLoadSubjects ? api('/admin/subjects') : Promise.resolve({ data: { subjects: [] } }),
-    state.adminTab === 'students_view' ? api(`/admin/students${studentsQuery}`) : Promise.resolve(null),
-    state.adminTab === 'analytics'
-      ? api(`/admin/analytics${toQueryString({ days: state.adminAnalyticsWindow })}`)
-      : Promise.resolve(null)
+      state.adminTab === 'students_view' ? api(`/admin/students${studentsQuery}`) : Promise.resolve(null),
+      state.adminTab === 'analytics'
+        ? api(`/admin/analytics${toQueryString({ days: state.adminAnalyticsWindow })}`)
+        : Promise.resolve(null),
+      shouldLoadBranding ? api('/admin/branding') : Promise.resolve(null)
     ]);
 
   const summary = summaryResult.data.summary;
@@ -2568,6 +2688,10 @@ async function renderAdminDashboard() {
   const students = studentsResult?.data?.students || [];
   const subjects = subjectsResult.data.subjects || [];
   const analytics = analyticsResult?.data?.analytics || null;
+  const branding = brandingResult?.data?.branding || null;
+  if (branding) {
+    state.adminBrandingDraft = branding;
+  }
 
   schedulePrefetch(
     ['/admin/summary', '/admin/teachers', '/admin/subjects', '/admin/students'],
@@ -2597,7 +2721,7 @@ async function renderAdminDashboard() {
 
       <main class="page container-xl">
         <h2>Welcome, ${escapeHtml(user.fullName)} 👋</h2>
-        <p class="subline">Institution ID: ${escapeHtml(institutionId)}</p>
+        <p class="subline">${escapeHtml(getInstitutionName())} | Institution ID: ${escapeHtml(institutionId)}</p>
         ${smokeReportMarkup(state.qaReports.admin)}
 
         ${
@@ -2688,6 +2812,66 @@ async function renderAdminDashboard() {
                       : '<p class="muted">No events found for this period.</p>'
                   }
                 </div>
+              </section>
+            `
+            : ''
+        }
+
+        ${
+          state.adminTab === 'branding'
+            ? `
+              <section class="panel">
+                <div class="progress-row">
+                  <div>
+                    <h3>Institution Branding</h3>
+                    <p class="muted">Set the institute name, logo, accent color and footer copy so the portal feels like their own product.</p>
+                  </div>
+                  <span class="status-badge done">White-label Panel</span>
+                </div>
+                <form id="adminBrandingForm" class="two-grid-form">
+                  <div>
+                    <label for="adminBrandInstituteName">Institute Name</label>
+                    <input id="adminBrandInstituteName" type="text" value="${escapeHtml(state.adminBrandingDraft?.instituteName || state.session?.institution?.name || '')}" required />
+                  </div>
+                  <div>
+                    <label for="adminBrandAccentColor">Accent Color</label>
+                    <input id="adminBrandAccentColor" type="color" value="${escapeHtml(state.adminBrandingDraft?.accentColor || '#2b8be6')}" />
+                  </div>
+                  <div class="full-span">
+                    <label for="adminBrandFooterText">Footer Text</label>
+                    <input id="adminBrandFooterText" type="text" maxlength="160" value="${escapeHtml(state.adminBrandingDraft?.footerText || 'Developed by LIFT Educations')}" required />
+                  </div>
+                  <div>
+                    <label for="adminBrandLogoFile">Institute Logo</label>
+                    <input id="adminBrandLogoFile" type="file" accept="image/*" />
+                  </div>
+                  <div>
+                    <label>Current Logo</label>
+                    ${
+                      state.adminBrandingDraft?.logoUrl
+                        ? `<div class="branding-preview-inline"><img src="${escapeHtml(state.adminBrandingDraft.logoUrl)}" alt="Institute logo preview" class="branding-preview-logo" /></div>`
+                        : '<p class="muted">No logo uploaded yet.</p>'
+                    }
+                  </div>
+                </form>
+                <article class="branding-preview-card">
+                  <p class="branding-preview-label">Preview</p>
+                  <div class="branding-preview-stage" style="--preview-accent:${escapeHtml(state.adminBrandingDraft?.accentColor || '#2b8be6')}">
+                    <div class="branding-preview-top">
+                      ${
+                        state.adminBrandingDraft?.logoUrl
+                          ? `<img src="${escapeHtml(state.adminBrandingDraft.logoUrl)}" alt="Institute logo preview" class="branding-preview-logo" />`
+                          : ''
+                      }
+                      <div>
+                        <p><strong>${escapeHtml(state.adminBrandingDraft?.instituteName || state.session?.institution?.name || 'Institute Name')}</strong></p>
+                        <p class="muted">${escapeHtml(state.adminBrandingDraft?.footerText || 'Developed by LIFT Educations')}</p>
+                      </div>
+                    </div>
+                  </div>
+                </article>
+                <button id="adminSaveBrandingBtn" class="cta-main">Save Branding</button>
+                <p class="auth-note" id="adminBrandingStatus"></p>
               </section>
             `
             : ''
@@ -2809,7 +2993,13 @@ async function renderAdminDashboard() {
                                 }
                               )
                               .join('')
-                          : '<tr><td colspan="7">No teachers yet.</td></tr>'
+                          : `<tr><td colspan="7">${emptyStateMarkup({
+                              title: 'No teachers yet',
+                              detail: 'Create the first teacher account so classes, tests, and resources can start flowing.',
+                              actionLabel: 'Create Teacher',
+                              actionAttr: 'data-admin-tab="teachers_create"',
+                              icon: '◌'
+                            })}</td></tr>`
                       }
                     </tbody>
                   </table>
@@ -2896,7 +3086,13 @@ async function renderAdminDashboard() {
                                 `
                               )
                               .join('')
-                          : '<tr><td colspan="5">No courses yet.</td></tr>'
+                          : `<tr><td colspan="5">${emptyStateMarkup({
+                              title: 'No courses yet',
+                              detail: 'Create a shared course structure so every teacher works from the same syllabus and course names.',
+                              actionLabel: 'Create Course',
+                              actionAttr: 'data-admin-tab="courses_create"',
+                              icon: '⌁'
+                            })}</td></tr>`
                       }
                     </tbody>
                   </table>
@@ -2981,7 +3177,11 @@ async function renderAdminDashboard() {
                                               `
                                             )
                                             .join('')
-                                        : '<tr><td colspan="5">No students assigned.</td></tr>'
+                                        : `<tr><td colspan="5">${emptyStateMarkup({
+                                            title: 'No students assigned to this live test',
+                                            detail: 'This test is live, but no assigned students are attached to the current monitor view.',
+                                            icon: '⋯'
+                                          })}</td></tr>`
                                     }
                                   </tbody>
                                 </table>
@@ -2990,7 +3190,13 @@ async function renderAdminDashboard() {
                           `
                         )
                         .join('')
-                    : '<p class="muted">No live tests are running right now.</p>'
+                    : emptyStateMarkup({
+                        title: 'No live tests running right now',
+                        detail: 'As soon as a scheduled test window opens, you can monitor attendance and submissions here.',
+                        actionLabel: 'Open Analytics',
+                        actionAttr: 'data-admin-tab="analytics"',
+                        icon: '◷'
+                      })
                 }
               </section>
 
@@ -3022,7 +3228,11 @@ async function renderAdminDashboard() {
                                 `
                               )
                               .join('')
-                          : '<tr><td colspan="5">No matching students.</td></tr>'
+                          : `<tr><td colspan="5">${emptyStateMarkup({
+                              title: 'No matching students',
+                              detail: 'Try a different student name or widen the course filter to see more enrolments.',
+                              icon: '⋯'
+                            })}</td></tr>`
                       }
                     </tbody>
                   </table>
@@ -3035,6 +3245,7 @@ async function renderAdminDashboard() {
         ${state.adminTab === 'accounts' ? accountSectionMarkup(user) : ''}
         <button class="cta-soft mini-qa-btn floating-qa-btn" id="runQaBtn">Run QA Check</button>
       </main>
+      ${dashboardFooterMarkup()}
       ${adminDialogMarkup()}
       ${appDialogMarkup()}
     </div>
@@ -3076,6 +3287,86 @@ async function renderAdminDashboard() {
     analyticsWindow.addEventListener('change', (event) => {
       state.adminAnalyticsWindow = event.target.value || '30';
       void renderAdminDashboard();
+    });
+  }
+
+  const adminSaveBrandingBtn = document.getElementById('adminSaveBrandingBtn');
+  if (adminSaveBrandingBtn) {
+    adminSaveBrandingBtn.addEventListener('click', async () => {
+      const status = document.getElementById('adminBrandingStatus');
+      const instituteName = sanitizeValue(
+        document.getElementById('adminBrandInstituteName')?.value || ''
+      );
+      const accentColor = String(
+        document.getElementById('adminBrandAccentColor')?.value || '#2b8be6'
+      ).trim();
+      const footerText = sanitizeValue(
+        document.getElementById('adminBrandFooterText')?.value || ''
+      );
+      const logoFile = document.getElementById('adminBrandLogoFile')?.files?.[0] || null;
+
+      if (instituteName.length < 2) {
+        status.textContent = 'Institute name must be at least 2 characters.';
+        showToast(status.textContent, 'error');
+        return;
+      }
+      if (!/^#([0-9a-f]{6})$/i.test(accentColor)) {
+        status.textContent = 'Accent color must be a valid hex code.';
+        showToast(status.textContent, 'error');
+        return;
+      }
+      if (footerText.length < 2) {
+        status.textContent = 'Footer text is required.';
+        showToast(status.textContent, 'error');
+        return;
+      }
+
+      await withButtonLoading(adminSaveBrandingBtn, 'Saving...', async () => {
+        try {
+          let logoUrl = state.adminBrandingDraft?.logoUrl || '';
+          if (logoFile) {
+            status.textContent = 'Uploading logo...';
+            const upload = await uploadAsset(logoFile, 'branding');
+            logoUrl = upload.url;
+          }
+
+          status.textContent = 'Saving branding...';
+          const result = await api('/admin/branding', {
+            method: 'PATCH',
+            body: JSON.stringify({
+              instituteName,
+              logoUrl,
+              accentColor,
+              footerText
+            })
+          });
+
+          state.adminBrandingDraft = result.data?.branding || null;
+          if (state.session) {
+            state.session = {
+              ...state.session,
+              institution: {
+                ...(state.session.institution || {}),
+                name: result.data?.branding?.instituteName || instituteName,
+                institutionId: state.session.institutionId,
+                branding: {
+                  logoUrl: result.data?.branding?.logoUrl || logoUrl,
+                  accentColor: result.data?.branding?.accentColor || accentColor,
+                  footerText: result.data?.branding?.footerText || footerText
+                }
+              }
+            };
+            saveSession(state.session, state.authRememberMe);
+          }
+          applyBrandTheme();
+          status.textContent = 'Branding updated successfully.';
+          showToast('Branding saved.', 'success');
+          await renderAdminDashboard();
+        } catch (error) {
+          status.textContent = error.message;
+          showToast(error.message, 'error');
+        }
+      });
     });
   }
 
@@ -3379,8 +3670,14 @@ async function renderTeacherDashboard() {
   ) {
     state.teacherPublishedTestSubjectId = '';
   }
-  if (!['active', 'archived', 'all'].includes(state.teacherPublishedTestStatus)) {
+  if (!['active', 'archived', 'trashed', 'all'].includes(state.teacherPublishedTestStatus)) {
     state.teacherPublishedTestStatus = 'active';
+  }
+  if (!['active', 'trashed', 'all'].includes(state.teacherResourceStatus)) {
+    state.teacherResourceStatus = 'active';
+  }
+  if (!['library', 'class_plan', 'all'].includes(state.teacherResourceContext)) {
+    state.teacherResourceContext = 'library';
   }
   const studentQuery = toQueryString({
     q: state.teacherTab === 'students' ? state.teacherStudentQuery : '',
@@ -3395,7 +3692,11 @@ async function renderTeacherDashboard() {
       ? toQueryString({
           subjectId: state.teacherResourceSubjectId,
           resourceType: state.teacherResourceType,
-          q: state.teacherResourceSearch
+          q: state.teacherResourceSearch,
+          status: state.teacherResourceStatus,
+          context: state.teacherResourceContext,
+          limit: DEFAULT_RESOURCE_PAGE_SIZE + state.teacherResourceOffset,
+          offset: 0
         })
       : '';
   const resourcesPromise = shouldLoadResources
@@ -3408,7 +3709,9 @@ async function renderTeacherDashboard() {
           q: state.teacherPublishedTestQuery,
           subjectId: state.teacherPublishedTestSubjectId,
           type: state.teacherPublishedTestType,
-          status: state.teacherPublishedTestStatus
+          status: state.teacherPublishedTestStatus,
+          limit: DEFAULT_PAGE_SIZE + state.teacherPublishedTestOffset,
+          offset: 0
         })
       : '';
   const testsPromise = shouldLoadTests
@@ -3431,7 +3734,9 @@ async function renderTeacherDashboard() {
           subjectId: state.teacherAssessmentSubjectId,
           type: state.teacherAssessmentType,
           status: state.teacherAssessmentStatus,
-          q: state.teacherAssessmentQuery
+          q: state.teacherAssessmentQuery,
+          limit: DEFAULT_PAGE_SIZE + state.teacherAssessmentOffset,
+          offset: 0
         })}`
       )
     : Promise.resolve({ data: { assessments: [] } });
@@ -3479,12 +3784,23 @@ async function renderTeacherDashboard() {
   );
 
   const resources = resourcesResult.data.resources || [];
+  const resourcesSummary = resourcesResult.data.summary || {
+    total: resources.length,
+    shownCount: resources.length,
+    limit: DEFAULT_RESOURCE_PAGE_SIZE,
+    offset: state.teacherResourceOffset,
+    hasMore: false
+  };
   const tests = testsResult.data.tests || [];
   const testsSummary = testsResult.data.summary || {
     shownCount: tests.length,
     activeCount: tests.length,
     archivedCount: 0,
-    totalCount: tests.length
+    trashedCount: 0,
+    totalCount: tests.length,
+    limit: DEFAULT_PAGE_SIZE,
+    offset: state.teacherPublishedTestOffset,
+    hasMore: false
   };
   if (state.teacherViewedTestId && !tests.some((test) => test._id === state.teacherViewedTestId)) {
     state.teacherViewedTestId = '';
@@ -3516,6 +3832,13 @@ async function renderTeacherDashboard() {
   const dashboardClassPlans = dashboardPlansResult.data.plans || [];
   const classPlans = classPlansResult.data.plans || [];
   const assessments = assessmentsResult.data.assessments || [];
+  const assessmentsSummary = assessmentsResult.data.summary || {
+    total: assessments.length,
+    shownCount: assessments.length,
+    limit: DEFAULT_PAGE_SIZE,
+    offset: state.teacherAssessmentOffset,
+    hasMore: false
+  };
   const liveTestStats = liveStatsResult.data.liveTests || [];
 
   schedulePrefetch(
@@ -3537,7 +3860,7 @@ async function renderTeacherDashboard() {
 
       <main class="page container-xl">
         <h2>Welcome, ${escapeHtml(user.fullName)} 👋</h2>
-        <p class="subline">Manage classes, subjects, students and tests from one place.</p>
+        <p class="subline">${escapeHtml(getInstitutionName())} | Manage classes, students, resources and assessments from one place.</p>
         ${smokeReportMarkup(state.qaReports.teacher)}
 
         ${
@@ -3570,7 +3893,13 @@ async function renderTeacherDashboard() {
                           `
                         )
                         .join('')
-                    : '<p class="muted">No classes planned for today.</p>'
+                    : emptyStateMarkup({
+                        title: 'No classes planned for today',
+                        detail: 'Use Class Planner to schedule the day and attach material before students log in.',
+                        actionLabel: 'Open Planner',
+                        actionAttr: 'data-teacher-tab="class_planner"',
+                        icon: '◌'
+                      })
                 }
               </section>
             `
@@ -3620,7 +3949,11 @@ async function renderTeacherDashboard() {
                                 `
                               )
                               .join('')
-                          : '<tr><td colspan="3">No subjects created by Admin yet.</td></tr>'
+                          : `<tr><td colspan="3">${emptyStateMarkup({
+                              title: 'No courses created yet',
+                              detail: 'Ask Admin to create the first course and upload the syllabus so you can start planning classes.',
+                              icon: '⌁'
+                            })}</td></tr>`
                       }
                     </tbody>
                   </table>
@@ -3770,7 +4103,11 @@ async function renderTeacherDashboard() {
                                 `;
                               })
                               .join('')
-                          : '<tr><td colspan="8">No students found.</td></tr>'
+                          : `<tr><td colspan="8">${emptyStateMarkup({
+                              title: 'No students found',
+                              detail: 'Create a student account above or change the filters to see who is already enrolled.',
+                              icon: '⋯'
+                            })}</td></tr>`
                       }
                     </tbody>
                   </table>
@@ -3910,7 +4247,11 @@ async function renderTeacherDashboard() {
                                 `
                               )
                               .join('')
-                          : '<tr><td colspan="5">No classes planned for this date.</td></tr>'
+                          : `<tr><td colspan="5">${emptyStateMarkup({
+                              title: 'No classes planned for this date',
+                              detail: 'Pick a subject, add the class timing, and attach materials so students see a proper daily schedule.',
+                              icon: '◷'
+                            })}</td></tr>`
                       }
                     </tbody>
                   </table>
@@ -3979,7 +4320,7 @@ async function renderTeacherDashboard() {
 
               <section class="panel">
                 <h3>Search Resources</h3>
-                <div class="two-grid-form">
+                <div class="three-grid-form published-tests-toolbar">
                   <div>
                     <label for="teacherResourceSearch">Search</label>
                     <input id="teacherResourceSearch" type="text" value="${escapeHtml(state.teacherResourceSearch)}" placeholder="Search title/keywords" />
@@ -4008,6 +4349,33 @@ async function renderTeacherDashboard() {
                         .join('')}
                     </select>
                   </div>
+                  <div>
+                    <label for="teacherResourceContext">Collection</label>
+                    <select id="teacherResourceContext">
+                      <option value="library" ${state.teacherResourceContext === 'library' ? 'selected' : ''}>Permanent Resources</option>
+                      <option value="class_plan" ${state.teacherResourceContext === 'class_plan' ? 'selected' : ''}>Class Materials</option>
+                      <option value="all" ${state.teacherResourceContext === 'all' ? 'selected' : ''}>Everything</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label for="teacherResourceStatus">Status</label>
+                    <select id="teacherResourceStatus">
+                      <option value="active" ${state.teacherResourceStatus === 'active' ? 'selected' : ''}>Active</option>
+                      <option value="trashed" ${state.teacherResourceStatus === 'trashed' ? 'selected' : ''}>Trash</option>
+                      <option value="all" ${state.teacherResourceStatus === 'all' ? 'selected' : ''}>All</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="meta-pill-row">
+                  <span class="meta-pill">Shown: ${escapeHtml(resourcesSummary.shownCount || 0)}</span>
+                  <span class="meta-pill">Total: ${escapeHtml(resourcesSummary.total || 0)}</span>
+                  <span class="meta-pill">View: ${escapeHtml(
+                    state.teacherResourceContext === 'class_plan'
+                      ? 'Class Materials'
+                      : state.teacherResourceContext === 'all'
+                        ? 'Everything'
+                        : 'Permanent Resources'
+                  )}</span>
                 </div>
               </section>
 
@@ -4019,6 +4387,7 @@ async function renderTeacherDashboard() {
                       <tr>
                         <th>Title</th>
                         <th>Type</th>
+                        <th>Status</th>
                         <th>Resource</th>
                         <th>Created</th>
                         <th>Action</th>
@@ -4034,27 +4403,47 @@ async function renderTeacherDashboard() {
                                     <td>${escapeHtml(resource.title)}</td>
                                     <td>${escapeHtml(resource.resourceType.toUpperCase())}</td>
                                     <td>
+                                      ${resourceContextBadge(resource)}
+                                      <span class="status-badge ${resource.deletedAt ? 'warn' : 'done'}">${resource.deletedAt ? 'Trashed' : 'Active'}</span>
+                                    </td>
+                                    <td>
                                       ${teacherResourceActionMarkup(resource)}
                                     </td>
                                     <td>${formatDate(resource.createdAt)}</td>
                                     <td>
-                                      <button
-                                        class="mini-btn danger"
-                                        data-delete-resource="${resource._id}"
-                                        data-delete-resource-title="${escapeHtml(resource.title || 'this resource')}"
-                                      >
-                                        Delete
-                                      </button>
+                                      <div class="table-action-group">
+                                        ${
+                                          resource.deletedAt
+                                            ? `
+                                              <button class="mini-btn" data-trash-resource="${resource._id}" data-trash-next="restore">Restore</button>
+                                              <button class="mini-btn danger" data-delete-resource="${resource._id}" data-delete-resource-title="${escapeHtml(resource.title || 'this resource')}">Delete Forever</button>
+                                            `
+                                            : `
+                                              <button class="mini-btn danger" data-trash-resource="${resource._id}" data-trash-next="trash">Move to Trash</button>
+                                            `
+                                        }
+                                      </div>
                                     </td>
                                   </tr>
                                 `
                               )
                               .join('')
-                          : '<tr><td colspan="5">No resources found.</td></tr>'
+                          : `<tr><td colspan="6">${emptyStateMarkup({
+                              title: 'No resources match these filters',
+                              detail:
+                                state.teacherResourceStatus === 'trashed'
+                                  ? 'Your trash is empty right now.'
+                                  : 'Upload a resource or widen the filters to see more here.',
+                              actionLabel: state.teacherResourceStatus === 'trashed' ? '' : 'Upload Resource',
+                              actionAttr:
+                                state.teacherResourceStatus === 'trashed' ? '' : 'data-teacher-tab="resources"',
+                              icon: '↗'
+                            })}</td></tr>`
                       }
                     </tbody>
                   </table>
                 </div>
+                ${loadMoreMarkup(resourcesSummary, 'data-load-more-teacher-resources', 'Load More Resources')}
               </section>
             `
             : ''
@@ -4249,7 +4638,13 @@ async function renderTeacherDashboard() {
                                     .join('')}
                                 </div>
                               `
-                              : '<p class="muted">No students found for this subject yet.</p>'
+                              : emptyStateMarkup({
+                                  title: 'No students found for this course yet',
+                                  detail: 'Assign students to this course first, then you can target specific learners for the test.',
+                                  actionLabel: 'Open Students',
+                                  actionAttr: 'data-teacher-tab="students"',
+                                  icon: '◌'
+                                })
                         }
                       </div>
                     `
@@ -4282,6 +4677,7 @@ async function renderTeacherDashboard() {
                     <span class="meta-pill">Shown: ${escapeHtml(testsSummary.shownCount || 0)}</span>
                     <span class="meta-pill">Active: ${escapeHtml(testsSummary.activeCount || 0)}</span>
                     <span class="meta-pill">Archived: ${escapeHtml(testsSummary.archivedCount || 0)}</span>
+                    <span class="meta-pill">Trash: ${escapeHtml(testsSummary.trashedCount || 0)}</span>
                   </div>
                 </div>
                 <div class="three-grid-form published-tests-toolbar">
@@ -4322,6 +4718,7 @@ async function renderTeacherDashboard() {
                     <select id="teacherPublishedTestStatus">
                       <option value="active" ${state.teacherPublishedTestStatus === 'active' ? 'selected' : ''}>Active only</option>
                       <option value="archived" ${state.teacherPublishedTestStatus === 'archived' ? 'selected' : ''}>Archived only</option>
+                      <option value="trashed" ${state.teacherPublishedTestStatus === 'trashed' ? 'selected' : ''}>Trash</option>
                       <option value="all" ${state.teacherPublishedTestStatus === 'all' ? 'selected' : ''}>All tests</option>
                     </select>
                   </div>
@@ -4366,35 +4763,58 @@ async function renderTeacherDashboard() {
                                           ${state.teacherViewedTestId === test._id ? 'Viewing' : 'View Test'}
                                         </button>
                                         ${
-                                          normalizedType === 'mcq'
+                                          !test.deletedAt && normalizedType === 'mcq'
                                             ? `<button class="mini-btn" data-edit-reconduct-test="${test._id}">Edit & Re-conduct</button>`
                                             : ''
                                         }
-                                        <button
-                                          class="mini-btn"
-                                          data-archive-test="${test._id}"
-                                          data-archive-next="${test.archivedAt ? 'restore' : 'archive'}"
-                                        >
-                                          ${test.archivedAt ? 'Restore' : 'Archive'}
-                                        </button>
-                                        <button
-                                          class="mini-btn danger"
-                                          data-delete-test="${test._id}"
-                                          data-delete-test-title="${escapeHtml(test.title || 'this test')}"
-                                        >
-                                          Delete
-                                        </button>
+                                        ${
+                                          test.deletedAt
+                                            ? `
+                                              <button class="mini-btn" data-trash-test="${test._id}" data-trash-next="restore">Restore</button>
+                                              <button class="mini-btn danger" data-delete-test="${test._id}" data-delete-test-title="${escapeHtml(test.title || 'this test')}">Delete Forever</button>
+                                            `
+                                            : `
+                                              <button
+                                                class="mini-btn"
+                                                data-archive-test="${test._id}"
+                                                data-archive-next="${test.archivedAt ? 'restore' : 'archive'}"
+                                              >
+                                                ${test.archivedAt ? 'Restore' : 'Archive'}
+                                              </button>
+                                              <button
+                                                class="mini-btn danger"
+                                                data-trash-test="${test._id}"
+                                                data-trash-next="trash"
+                                              >
+                                                Move to Trash
+                                              </button>
+                                            `
+                                        }
                                       </div>
                                     </td>
                                   </tr>
                                 `;
                               })
                               .join('')
-                          : '<tr><td colspan="6">No tests match the current search and filters.</td></tr>'
+                          : `<tr><td colspan="6">${emptyStateMarkup({
+                              title: 'No tests match these filters',
+                              detail:
+                                state.teacherPublishedTestStatus === 'trashed'
+                                  ? 'Nothing is sitting in the trash right now.'
+                                  : 'Publish a new test or widen your filters to see older ones.',
+                              actionLabel:
+                                state.teacherPublishedTestStatus === 'trashed' ? '' : 'Conduct Test',
+                              actionAttr:
+                                state.teacherPublishedTestStatus === 'trashed'
+                                  ? ''
+                                  : 'data-teacher-tab="assessment_conduct"',
+                              icon: '✓'
+                            })}</td></tr>`
                       }
                     </tbody>
                   </table>
                 </div>
+                ${loadMoreMarkup(testsSummary, 'data-load-more-tests', 'Load More Tests')}
               </section>
 
             `
@@ -4491,7 +4911,11 @@ async function renderTeacherDashboard() {
                                               `
                                             )
                                             .join('')
-                                        : '<tr><td colspan="5">No assigned students for this live test.</td></tr>'
+                                        : `<tr><td colspan="5">${emptyStateMarkup({
+                                            title: 'No students assigned to this live test',
+                                            detail: 'Select students or publish to all students in the course to populate this monitor.',
+                                            icon: '⋯'
+                                          })}</td></tr>`
                                     }
                                   </tbody>
                                 </table>
@@ -4500,11 +4924,27 @@ async function renderTeacherDashboard() {
                           `
                         )
                         .join('')
-                    : '<p class="muted">No live tests right now. Schedule a test window to track it here.</p>'
+                    : emptyStateMarkup({
+                        title: 'No live tests right now',
+                        detail: 'Schedule a test window to watch attendance and submissions in real time from this panel.',
+                        actionLabel: 'Conduct Test',
+                        actionAttr: 'data-teacher-tab="assessment_conduct"',
+                        icon: '◷'
+                      })
                 }
               </section>
 
               <section class="panel table-panel">
+                <div class="progress-row">
+                  <div>
+                    <h3>Assessment Results</h3>
+                    <p class="muted">Review student submissions, save marks, and keep the evaluation queue moving.</p>
+                  </div>
+                  <div class="meta-pill-row">
+                    <span class="meta-pill">Shown: ${escapeHtml(assessmentsSummary.shownCount || 0)}</span>
+                    <span class="meta-pill">Total: ${escapeHtml(assessmentsSummary.total || 0)}</span>
+                  </div>
+                </div>
                 <div class="table-wrap">
                   <table>
                     <thead>
@@ -4514,6 +4954,7 @@ async function renderTeacherDashboard() {
                         <th>Subject</th>
                         <th>Test</th>
                         <th>Type</th>
+                        <th>Status</th>
                         <th>Marks</th>
                         <th>Answers</th>
                         <th>Grade</th>
@@ -4538,6 +4979,7 @@ async function renderTeacherDashboard() {
                                     <td>${escapeHtml(attempt.test?.subjectName || '-')}</td>
                                     <td>${escapeHtml(attempt.test?.title || '-')}</td>
                                     <td>${escapeHtml(formatTestType(attempt.type))}</td>
+                                    <td>${assessmentStatusBadge(attempt)}</td>
                                     <td>${escapeHtml(scoreText)}${
                                   attempt.evaluatedAt
                                     ? `<br /><small>Graded: ${escapeHtml(formatDate(attempt.evaluatedAt))}</small>`
@@ -4563,11 +5005,19 @@ async function renderTeacherDashboard() {
                                 `;
                               })
                               .join('')
-                          : '<tr><td colspan="8">No submissions found for current filters.</td></tr>'
+                          : `<tr><td colspan="9">${emptyStateMarkup({
+                              title: 'No submissions found',
+                              detail:
+                                state.teacherAssessmentStatus === 'graded'
+                                  ? 'Nothing has been graded for the current filters yet.'
+                                  : 'Students have not submitted anything for this filter set yet.',
+                              icon: '⋯'
+                            })}</td></tr>`
                       }
                     </tbody>
                   </table>
                 </div>
+                ${loadMoreMarkup(assessmentsSummary, 'data-load-more-assessments', 'Load More Results')}
               </section>
             `
             : ''
@@ -4576,6 +5026,7 @@ async function renderTeacherDashboard() {
         ${state.teacherTab === 'accounts' ? accountSectionMarkup(user) : ''}
         <button class="cta-soft mini-qa-btn floating-qa-btn" id="runQaBtn">Run QA Check</button>
       </main>
+      ${dashboardFooterMarkup()}
 
       ${
         viewedTest
@@ -5152,6 +5603,7 @@ async function renderTeacherDashboard() {
       const nextValue = event.target.value;
       debounceByKey('teacher-resource-search', () => {
         state.teacherResourceSearch = nextValue;
+        state.teacherResourceOffset = 0;
         void renderTeacherDashboard();
       });
     });
@@ -5161,6 +5613,7 @@ async function renderTeacherDashboard() {
   if (teacherResourceType) {
     teacherResourceType.addEventListener('change', (event) => {
       state.teacherResourceType = event.target.value;
+      state.teacherResourceOffset = 0;
       void renderTeacherDashboard();
     });
   }
@@ -5169,9 +5622,57 @@ async function renderTeacherDashboard() {
   if (teacherResourceSubject) {
     teacherResourceSubject.addEventListener('change', (event) => {
       state.teacherResourceSubjectId = event.target.value;
+      state.teacherResourceOffset = 0;
       void renderTeacherDashboard();
     });
   }
+
+  const teacherResourceContext = document.getElementById('teacherResourceContext');
+  if (teacherResourceContext) {
+    teacherResourceContext.addEventListener('change', (event) => {
+      state.teacherResourceContext = event.target.value || 'library';
+      state.teacherResourceOffset = 0;
+      void renderTeacherDashboard();
+    });
+  }
+
+  const teacherResourceStatus = document.getElementById('teacherResourceStatus');
+  if (teacherResourceStatus) {
+    teacherResourceStatus.addEventListener('change', (event) => {
+      state.teacherResourceStatus = event.target.value || 'active';
+      state.teacherResourceOffset = 0;
+      void renderTeacherDashboard();
+    });
+  }
+
+  document.querySelectorAll('[data-load-more-teacher-resources]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.teacherResourceOffset += DEFAULT_RESOURCE_PAGE_SIZE;
+      void renderTeacherDashboard();
+    });
+  });
+
+  document.querySelectorAll('[data-trash-resource]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const resourceId = button.getAttribute('data-trash-resource');
+      const nextAction = button.getAttribute('data-trash-next') || 'trash';
+      if (!resourceId) return;
+      await withButtonLoading(button, nextAction === 'restore' ? 'Restoring...' : 'Moving...', async () => {
+        try {
+          await api(`/teacher/resources/${resourceId}/trash`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              trashed: nextAction !== 'restore'
+            })
+          });
+          showToast(nextAction === 'restore' ? 'Resource restored.' : 'Resource moved to trash.', 'success');
+          void renderTeacherDashboard();
+        } catch (error) {
+          showToast(error.message || 'Could not update resource status.', 'error');
+        }
+      });
+    });
+  });
 
   document.querySelectorAll('[data-delete-resource]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -5181,9 +5682,9 @@ async function renderTeacherDashboard() {
       state.appDialog = {
         type: 'delete-resource',
         resourceId,
-        title: 'Delete Resource',
-        message: `Delete ${resourceTitle}? Students will lose access to this file or link.`,
-        confirmLabel: 'Delete Resource',
+        title: 'Delete Resource Forever',
+        message: `Delete ${resourceTitle} forever? This cannot be undone.`,
+        confirmLabel: 'Delete Forever',
         loadingLabel: 'Deleting...'
       };
       void renderTeacherDashboard();
@@ -5198,9 +5699,9 @@ async function renderTeacherDashboard() {
       state.appDialog = {
         type: 'delete-test',
         testId,
-        title: 'Delete Test',
-        message: `Delete ${testTitle}? Students will lose access to this test and all related submissions will be removed.`,
-        confirmLabel: 'Delete Test',
+        title: 'Delete Test Forever',
+        message: `Delete ${testTitle} forever? All related submissions will be removed.`,
+        confirmLabel: 'Delete Forever',
         loadingLabel: 'Deleting...'
       };
       void renderTeacherDashboard();
@@ -5610,6 +6111,7 @@ async function renderTeacherDashboard() {
       const nextValue = event.target.value;
       debounceByKey('teacher-published-tests-search', () => {
         state.teacherPublishedTestQuery = nextValue;
+        state.teacherPublishedTestOffset = 0;
         void renderTeacherDashboard();
       });
     });
@@ -5619,6 +6121,7 @@ async function renderTeacherDashboard() {
   if (teacherPublishedTestSubjectId) {
     teacherPublishedTestSubjectId.addEventListener('change', (event) => {
       state.teacherPublishedTestSubjectId = event.target.value || '';
+      state.teacherPublishedTestOffset = 0;
       void renderTeacherDashboard();
     });
   }
@@ -5627,6 +6130,7 @@ async function renderTeacherDashboard() {
   if (teacherPublishedTestType) {
     teacherPublishedTestType.addEventListener('change', (event) => {
       state.teacherPublishedTestType = event.target.value || '';
+      state.teacherPublishedTestOffset = 0;
       void renderTeacherDashboard();
     });
   }
@@ -5635,9 +6139,17 @@ async function renderTeacherDashboard() {
   if (teacherPublishedTestStatus) {
     teacherPublishedTestStatus.addEventListener('change', (event) => {
       state.teacherPublishedTestStatus = event.target.value || 'active';
+      state.teacherPublishedTestOffset = 0;
       void renderTeacherDashboard();
     });
   }
+
+  document.querySelectorAll('[data-load-more-tests]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.teacherPublishedTestOffset += DEFAULT_PAGE_SIZE;
+      void renderTeacherDashboard();
+    });
+  });
 
   document.querySelectorAll('[data-archive-test]').forEach((button) => {
     button.addEventListener('click', async () => {
@@ -5657,6 +6169,32 @@ async function renderTeacherDashboard() {
             state.teacherViewedTestId = '';
           }
           showToast(nextAction === 'restore' ? 'Test restored.' : 'Test archived.', 'success');
+          void renderTeacherDashboard();
+        } catch (error) {
+          showToast(error.message || 'Could not update test status.', 'error');
+        }
+      });
+    });
+  });
+
+  document.querySelectorAll('[data-trash-test]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const testId = button.getAttribute('data-trash-test');
+      const nextAction = button.getAttribute('data-trash-next') || 'trash';
+      if (!testId) return;
+
+      await withButtonLoading(button, nextAction === 'restore' ? 'Restoring...' : 'Moving...', async () => {
+        try {
+          await api(`/teacher/tests/${testId}/trash`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              trashed: nextAction !== 'restore'
+            })
+          });
+          if (nextAction !== 'restore' && state.teacherViewedTestId === testId) {
+            state.teacherViewedTestId = '';
+          }
+          showToast(nextAction === 'restore' ? 'Test restored.' : 'Test moved to trash.', 'success');
           void renderTeacherDashboard();
         } catch (error) {
           showToast(error.message || 'Could not update test status.', 'error');
@@ -5886,6 +6424,7 @@ async function renderTeacherDashboard() {
       const nextValue = event.target.value;
       debounceByKey('teacher-assessment-search', () => {
         state.teacherAssessmentQuery = nextValue;
+        state.teacherAssessmentOffset = 0;
         void renderTeacherDashboard();
       });
     });
@@ -5895,6 +6434,7 @@ async function renderTeacherDashboard() {
   if (teacherAssessmentSubject) {
     teacherAssessmentSubject.addEventListener('change', (event) => {
       state.teacherAssessmentSubjectId = event.target.value || '';
+      state.teacherAssessmentOffset = 0;
       void renderTeacherDashboard();
     });
   }
@@ -5903,6 +6443,7 @@ async function renderTeacherDashboard() {
   if (teacherAssessmentType) {
     teacherAssessmentType.addEventListener('change', (event) => {
       state.teacherAssessmentType = event.target.value || '';
+      state.teacherAssessmentOffset = 0;
       void renderTeacherDashboard();
     });
   }
@@ -5911,9 +6452,17 @@ async function renderTeacherDashboard() {
   if (teacherAssessmentStatus) {
     teacherAssessmentStatus.addEventListener('change', (event) => {
       state.teacherAssessmentStatus = event.target.value || 'pending';
+      state.teacherAssessmentOffset = 0;
       void renderTeacherDashboard();
     });
   }
+
+  document.querySelectorAll('[data-load-more-assessments]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.teacherAssessmentOffset += DEFAULT_PAGE_SIZE;
+      void renderTeacherDashboard();
+    });
+  });
 
   document.querySelectorAll('[data-grade-attempt]').forEach((button) => {
     button.addEventListener('click', async () => {
@@ -5984,6 +6533,7 @@ function renderStudentAttemptResult(test, attempt, backTab) {
           }
         </section>
       </main>
+      ${dashboardFooterMarkup()}
     </div>
   `;
 
@@ -6076,6 +6626,7 @@ function renderStudentTestAttempt(test, backTab) {
           <p class="auth-note" id="studentAttemptStatus"></p>
         </section>
       </main>
+      ${dashboardFooterMarkup()}
     </div>
   `;
 
@@ -6386,7 +6937,7 @@ function studentClassResourceMarkup(resource) {
   return '<span class="muted">No file</span>';
 }
 
-function resourcesGroupedMarkup(resources) {
+function groupResourcesByType(resources) {
   const groups = {
     pdf: [],
     ebook: [],
@@ -6400,34 +6951,100 @@ function resourcesGroupedMarkup(resources) {
     groups[key].push(resource);
   });
 
-  const section = (type, label) => {
-    const list = groups[type] || [];
-    return `
-      <section class="resource-section">
-        <h4>${label}</h4>
-        ${
-          list.length
-            ? list
-                .map(
-                  (item) => `
-                    <article class="resource-card modern ${escapeHtml(item.resourceType)}">
-                      <div class="resource-thumb ${escapeHtml(item.resourceType)}">${escapeHtml(item.resourceType.toUpperCase())}</div>
-                      <div class="resource-body">
-                        <p><strong>${escapeHtml(item.title)}</strong></p>
-                        <p class="muted">${escapeHtml(item.subjectName || '')} | ${escapeHtml(item.teacherName || '')}</p>
-                        ${studentResourceActionMarkup(item)}
-                      </div>
-                    </article>
-                  `
-                )
-                .join('')
-            : '<p class="muted">No resources in this section.</p>'
-        }
-      </section>
-    `;
-  };
+  return groups;
+}
 
-  return `${section('pdf', 'PDFs')}${section('ebook', 'EBooks')}${section('video', 'Videos')}${section('link', 'Links')}`;
+function resourceTypeSectionMarkup(groups, type, label) {
+  const list = groups[type] || [];
+  return `
+    <section class="resource-section">
+      <h4>${label}</h4>
+      ${
+        list.length
+          ? list
+              .map(
+                (item) => `
+                  <article class="resource-card modern ${escapeHtml(item.resourceType)}">
+                    <div class="resource-thumb ${escapeHtml(item.resourceType)}">${escapeHtml(item.resourceType.toUpperCase())}</div>
+                    <div class="resource-body">
+                      <div class="meta-pill-row">
+                        ${resourceContextBadge(item)}
+                        ${
+                          item.classPlan?.scheduledDate
+                            ? `<span class="status-badge neutral">${escapeHtml(formatDate(item.classPlan.scheduledDate))}</span>`
+                            : ''
+                        }
+                      </div>
+                      <p><strong>${escapeHtml(item.title)}</strong></p>
+                      <p class="muted">${escapeHtml(item.subjectName || '')} | ${escapeHtml(item.teacherName || '')}</p>
+                      ${
+                        item.classPlan?.title
+                          ? `<p class="muted">Class: ${escapeHtml(item.classPlan.title)}</p>`
+                          : ''
+                      }
+                      ${studentResourceActionMarkup(item)}
+                    </div>
+                  </article>
+                `
+              )
+              .join('')
+          : '<p class="muted">No resources in this section.</p>'
+      }
+    </section>
+  `;
+}
+
+function resourcesGroupedMarkup(resources, summary = {}) {
+  const permanentResources = (resources || []).filter((item) => item.resourceContext !== 'class_plan');
+  const classMaterials = (resources || []).filter((item) => item.resourceContext === 'class_plan');
+  const permanentGroups = groupResourcesByType(permanentResources);
+  const classGroups = groupResourcesByType(classMaterials);
+
+  if (!(resources || []).length) {
+    return emptyStateMarkup({
+      title: 'No resources yet',
+      detail: 'When teachers upload permanent resources or class materials, they will show up here in separate sections.',
+      actionLabel: 'Open Classes',
+      actionAttr: 'data-student-nav="classes"',
+      icon: '⌁'
+    });
+  }
+
+  return `
+    <div class="progress-row">
+      <div>
+        <h3>Permanent Resources</h3>
+        <p class="muted">Reference materials that stay available for this course.</p>
+      </div>
+      <div class="meta-pill-row">
+        <span class="meta-pill">Shown: ${escapeHtml(summary.shownCount || resources.length)}</span>
+        <span class="meta-pill">Total: ${escapeHtml(summary.total || resources.length)}</span>
+      </div>
+    </div>
+    ${resourceTypeSectionMarkup(permanentGroups, 'pdf', 'PDFs')}
+    ${resourceTypeSectionMarkup(permanentGroups, 'ebook', 'EBooks')}
+    ${resourceTypeSectionMarkup(permanentGroups, 'video', 'Videos')}
+    ${resourceTypeSectionMarkup(permanentGroups, 'link', 'Links')}
+    <section class="resource-section">
+      <div class="progress-row">
+        <div>
+          <h4>Class Materials</h4>
+          <p class="muted">Resources attached to specific classes so they stay separate from the permanent library.</p>
+        </div>
+        <span class="status-badge pending">${escapeHtml(classMaterials.length)} item${classMaterials.length === 1 ? '' : 's'}</span>
+      </div>
+      ${
+        classMaterials.length
+          ? `${resourceTypeSectionMarkup(classGroups, 'pdf', 'PDFs')}${resourceTypeSectionMarkup(classGroups, 'ebook', 'EBooks')}${resourceTypeSectionMarkup(classGroups, 'video', 'Videos')}${resourceTypeSectionMarkup(classGroups, 'link', 'Links')}`
+          : emptyStateMarkup({
+              title: 'No class materials right now',
+              detail: 'Teachers can attach class-only files from the planner, and they will appear here with a class label.',
+              icon: '⊕'
+            })
+      }
+    </section>
+    ${loadMoreMarkup(summary, 'data-load-more-student-resources', 'Load More Resources')}
+  `;
 }
 
 function levelProgressPercent(xp = 0) {
@@ -6464,9 +7081,29 @@ function splitStudentClassesByStatus(classes) {
 }
 
 function studentClassCardMarkup(item) {
+  const now = Date.now();
+  const endAt = resolveStudentClassEndAt(item);
+  let startAt = Number.NaN;
+  if (item?.scheduledDate && item?.startTime) {
+    const baseDate = new Date(item.scheduledDate);
+    const [hours, minutes] = String(item.startTime || '')
+      .split(':')
+      .map((part) => Number(part));
+    if (!Number.isNaN(baseDate.getTime()) && Number.isFinite(hours) && Number.isFinite(minutes)) {
+      baseDate.setHours(hours, minutes, 0, 0);
+      startAt = baseDate.getTime();
+    }
+  }
+  let classStatus = { label: 'Upcoming', className: 'pending' };
+  if (endAt && endAt.getTime() < now) classStatus = { label: 'Completed', className: 'neutral' };
+  else if (Number.isFinite(startAt) && startAt <= now) classStatus = { label: 'Live', className: 'done' };
+
   return `
     <article class="stack-item">
-      <p><strong>${escapeHtml(item.title || 'Class')}</strong></p>
+      <div class="progress-row">
+        <p><strong>${escapeHtml(item.title || 'Class')}</strong></p>
+        <span class="status-badge ${classStatus.className}">${escapeHtml(classStatus.label)}</span>
+      </div>
       <p class="muted">${escapeHtml(item.subjectName || '-')} | ${escapeHtml(item.startTime || '--:--')} - ${escapeHtml(item.endTime || '--:--')}</p>
       <p class="muted">Teacher: ${escapeHtml(item.teacherName || '-')}</p>
       ${item.description ? `<p>${escapeHtml(item.description)}</p>` : ''}
@@ -6541,14 +7178,25 @@ async function renderStudentDashboard() {
   const completedTodos = todoItems.filter((item) => item.completed);
 
   let resources = [];
+  let studentResourcesSummary = {
+    total: 0,
+    shownCount: 0,
+    limit: DEFAULT_RESOURCE_PAGE_SIZE,
+    offset: state.studentResourceOffset,
+    hasMore: false
+  };
   if (state.studentTab === 'resources') {
     const resourceQuery = toQueryString({
       q: state.studentResourceSearch,
       resourceType: state.studentResourceType,
-      subjectId: state.studentResourceSubjectId
+      subjectId: state.studentResourceSubjectId,
+      context: state.studentResourceContext,
+      limit: DEFAULT_RESOURCE_PAGE_SIZE + state.studentResourceOffset,
+      offset: 0
     });
     const resourceResult = await api(`/student/resources${resourceQuery}`);
     resources = resourceResult.data.resources || [];
+    studentResourcesSummary = resourceResult.data.summary || studentResourcesSummary;
   }
 
   let syllabi = [];
@@ -6573,7 +7221,7 @@ async function renderStudentDashboard() {
 
       <main class="page container-xl">
         <h2>Good Day, ${escapeHtml(user.fullName)} 👋</h2>
-        <p class="subline">Institution ID: ${escapeHtml(institutionId)}</p>
+        <p class="subline">${escapeHtml(getInstitutionName())} | Institution ID: ${escapeHtml(institutionId)}</p>
         ${smokeReportMarkup(state.qaReports.student)}
 
         ${
@@ -6654,9 +7302,14 @@ async function renderStudentDashboard() {
                   todayTests.length
                     ? todayTests
                         .map(
-                          (test) => `
+                          (test) => {
+                            const testStatus = getPublishedTestStatus(test);
+                            return `
                             <article class="stack-item pending-item">
                               <div>
+                                <div class="meta-pill-row">
+                                  <span class="status-badge ${escapeHtml(testStatus.className)}">${escapeHtml(testStatus.label)}</span>
+                                </div>
                                 <p><strong>${escapeHtml(test.title)}</strong></p>
                                 <p class="muted">${escapeHtml(test.subjectName || '')} | ${escapeHtml(formatTestType(test.type))} | ${escapeHtml(test.durationMinutes)} min</p>
                                 <p class="muted">
@@ -6676,10 +7329,17 @@ async function renderStudentDashboard() {
                                 test.canStart === false ? 'disabled' : ''
                               }>${test.canStart === false ? 'Not Open Yet' : 'Start Test'}</button>
                             </article>
-                          `
+                          `;
+                          }
                         )
                         .join('')
-                    : '<p class="muted">No tests available today.</p>'
+                    : emptyStateMarkup({
+                        title: 'No test scheduled for today',
+                        detail: 'When your teacher publishes or schedules today’s exam, it will appear here automatically.',
+                        actionLabel: 'Open Resources',
+                        actionAttr: 'data-student-nav="resources"',
+                        icon: '○'
+                      })
                 }
               </section>
             `
@@ -6695,9 +7355,14 @@ async function renderStudentDashboard() {
                   pendingTests.length
                     ? pendingTests
                         .map(
-                          (test) => `
+                          (test) => {
+                            const testStatus = getPublishedTestStatus(test);
+                            return `
                             <article class="stack-item pending-item">
                               <div>
+                                <div class="meta-pill-row">
+                                  <span class="status-badge ${escapeHtml(testStatus.className)}">${escapeHtml(testStatus.label)}</span>
+                                </div>
                                 <p><strong>${escapeHtml(test.title)}</strong></p>
                                 <p class="muted">${escapeHtml(test.subjectName || '')} | ${escapeHtml(formatTestType(test.type))} | ${escapeHtml(test.durationMinutes)} min</p>
                                 <p class="muted">
@@ -6717,10 +7382,17 @@ async function renderStudentDashboard() {
                                 test.canStart === false ? 'disabled' : ''
                               }>${test.canStart === false ? 'Window Closed' : 'Start Test'}</button>
                             </article>
-                          `
+                          `;
+                          }
                         )
                         .join('')
-                    : '<p class="muted">No pending tests.</p>'
+                    : emptyStateMarkup({
+                        title: 'No pending tests',
+                        detail: 'You are caught up for now. New tests and overdue items will show up here automatically.',
+                        actionLabel: 'Back to Dashboard',
+                        actionAttr: 'data-student-nav="dashboard"',
+                        icon: '✓'
+                      })
                 }
               </section>
             `
@@ -6739,7 +7411,13 @@ async function renderStudentDashboard() {
                           (item) => studentClassCardMarkup(item)
                         )
                         .join('')
-                    : '<p class="muted">No active or upcoming classes for today.</p>'
+                    : emptyStateMarkup({
+                        title: 'No active or upcoming classes',
+                        detail: 'Your teacher has not scheduled a class for the rest of today yet.',
+                        actionLabel: 'View Resources',
+                        actionAttr: 'data-student-nav="resources"',
+                        icon: '◌'
+                      })
                 }
               </section>
 
@@ -6752,7 +7430,11 @@ async function renderStudentDashboard() {
                           (item) => studentClassCardMarkup(item)
                         )
                         .join('')
-                    : '<p class="muted">No completed classes yet for today.</p>'
+                    : emptyStateMarkup({
+                        title: 'No completed classes yet',
+                        detail: 'Classes you finish today will move here automatically.',
+                        icon: '✓'
+                      })
                 }
               </section>
             `
@@ -6764,7 +7446,7 @@ async function renderStudentDashboard() {
             ? `
               <section class="panel">
                 <h3>Resources</h3>
-                <div class="two-grid-form">
+                <div class="three-grid-form published-tests-toolbar">
                   <div>
                     <label for="studentResourceSearch">Search</label>
                     <input id="studentResourceSearch" type="text" value="${escapeHtml(state.studentResourceSearch)}" placeholder="e.g. Introduction to MS Word" />
@@ -6793,11 +7475,19 @@ async function renderStudentDashboard() {
                         .join('')}
                     </select>
                   </div>
+                  <div>
+                    <label for="studentResourceContext">Collection</label>
+                    <select id="studentResourceContext">
+                      <option value="all" ${state.studentResourceContext === 'all' ? 'selected' : ''}>Everything</option>
+                      <option value="library" ${state.studentResourceContext === 'library' ? 'selected' : ''}>Permanent Resources</option>
+                      <option value="class_plan" ${state.studentResourceContext === 'class_plan' ? 'selected' : ''}>Class Materials</option>
+                    </select>
+                  </div>
                 </div>
               </section>
 
               <section class="panel">
-                ${resourcesGroupedMarkup(resources)}
+                ${resourcesGroupedMarkup(resources, studentResourcesSummary)}
               </section>
             `
             : ''
@@ -6855,7 +7545,13 @@ async function renderStudentDashboard() {
                               </tr>
                             `
                           )
-                          .join('') || '<tr><td colspan="3">No syllabus available.</td></tr>'
+                          .join('') || `<tr><td colspan="3">${emptyStateMarkup({
+                            title: 'No syllabus available',
+                            detail: 'Your teacher or admin needs to upload the latest syllabus PDF before it can appear here.',
+                            actionLabel: 'Open Resources',
+                            actionAttr: 'data-student-nav="resources"',
+                            icon: '⌁'
+                          })}</td></tr>`
                       }
                     </tbody>
                   </table>
@@ -6905,7 +7601,13 @@ async function renderStudentDashboard() {
                                 `
                               )
                               .join('')
-                          : '<tr><td colspan="5">No attempts yet.</td></tr>'
+                          : `<tr><td colspan="5">${emptyStateMarkup({
+                              title: 'No test attempts yet',
+                              detail: 'Once you complete a test, your score and answer key access will appear here.',
+                              actionLabel: 'Open Today\'s Test',
+                              actionAttr: 'data-student-nav="today"',
+                              icon: '○'
+                            })}</td></tr>`
                       }
                     </tbody>
                   </table>
@@ -6959,7 +7661,11 @@ async function renderStudentDashboard() {
                             `
                           )
                           .join('')
-                      : '<p class="muted">No pending tasks. Add one above.</p>'
+                      : emptyStateMarkup({
+                          title: 'No pending tasks',
+                          detail: 'Add a study task above to start building your own planner for the day.',
+                          icon: '＋'
+                        })
                   }
                 </div>
               </section>
@@ -6988,7 +7694,11 @@ async function renderStudentDashboard() {
                             `
                           )
                           .join('')
-                      : '<p class="muted">No completed tasks yet.</p>'
+                      : emptyStateMarkup({
+                          title: 'No completed tasks yet',
+                          detail: 'Tasks you finish will move here so you can see your daily progress clearly.',
+                          icon: '✓'
+                        })
                   }
                 </div>
                 <button id="studentClearCompletedBtn" class="cta-soft">Clear Completed</button>
@@ -7019,6 +7729,7 @@ async function renderStudentDashboard() {
           `
           : ''
       }
+      ${dashboardFooterMarkup()}
     </div>
   `;
 
@@ -7085,6 +7796,7 @@ async function renderStudentDashboard() {
       const nextValue = event.target.value;
       debounceByKey('student-resource-search', () => {
         state.studentResourceSearch = nextValue;
+        state.studentResourceOffset = 0;
         void renderStudentDashboard();
       });
     });
@@ -7094,6 +7806,7 @@ async function renderStudentDashboard() {
   if (studentResourceType) {
     studentResourceType.addEventListener('change', (event) => {
       state.studentResourceType = event.target.value;
+      state.studentResourceOffset = 0;
       void renderStudentDashboard();
     });
   }
@@ -7102,9 +7815,26 @@ async function renderStudentDashboard() {
   if (studentResourceSubjectId) {
     studentResourceSubjectId.addEventListener('change', (event) => {
       state.studentResourceSubjectId = event.target.value;
+      state.studentResourceOffset = 0;
       void renderStudentDashboard();
     });
   }
+
+  const studentResourceContext = document.getElementById('studentResourceContext');
+  if (studentResourceContext) {
+    studentResourceContext.addEventListener('change', (event) => {
+      state.studentResourceContext = event.target.value || 'all';
+      state.studentResourceOffset = 0;
+      void renderStudentDashboard();
+    });
+  }
+
+  document.querySelectorAll('[data-load-more-student-resources]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.studentResourceOffset += DEFAULT_RESOURCE_PAGE_SIZE;
+      void renderStudentDashboard();
+    });
+  });
 
   const studentSyllabusSubjectId = document.getElementById('studentSyllabusSubjectId');
   if (studentSyllabusSubjectId) {
@@ -7234,6 +7964,22 @@ async function renderByRole() {
   }
 
   try {
+    const me = await fetchMe();
+    if (me?.user) {
+      saveSession(
+        {
+          user: {
+            ...state.session.user,
+            ...me.user
+          },
+          institutionId: me.institution?.institutionId || state.session.institutionId,
+          institution: me.institution || state.session.institution || null
+        },
+        state.authRememberMe
+      );
+    }
+    applyBrandTheme();
+
     if (state.session.user.role === 'admin') {
       await renderAdminDashboard();
       return;
@@ -7273,7 +8019,7 @@ async function renderByRole() {
             <button class="back-link-btn" id="backBtn">Back to Home</button>
           </div>
         </div>
-        <footer class="hero-footer">Developed by LIFT Educations</footer>
+        <footer class="hero-footer">${footerTextMarkup()}</footer>
       </section>
     `;
 
