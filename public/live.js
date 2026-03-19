@@ -65,7 +65,9 @@ const state = {
   teacherPublishedTestStatus: 'active',
   teacherPublishedTestOffset: 0,
   teacherTestType: 'mcq',
+  teacherTestTitle: '',
   teacherMcqQuestionCount: '',
+  teacherMcqDraftQuestions: [],
   teacherMcqDurationMinutes: MCQ_DEFAULT_DURATION_MINUTES,
   teacherMcqCorrectMark: 1,
   teacherMcqWrongMark: 0,
@@ -255,7 +257,9 @@ function resetUiStateOnLogout() {
   state.teacherPublishedTestStatus = 'active';
   state.teacherPublishedTestOffset = 0;
   state.teacherTestType = 'mcq';
+  state.teacherTestTitle = '';
   state.teacherMcqQuestionCount = '';
+  state.teacherMcqDraftQuestions = [];
   state.teacherMcqDurationMinutes = MCQ_DEFAULT_DURATION_MINUTES;
   state.teacherMcqCorrectMark = 1;
   state.teacherMcqWrongMark = 0;
@@ -1592,28 +1596,103 @@ function getValidMcqQuestionCount(value) {
   return normalized;
 }
 
-function objectiveQuestionBuilderMarkup(questionCount) {
+function mcqQuestionCountOptionsMarkup(selectedValue) {
+  const selectedCount = getValidMcqQuestionCount(selectedValue);
+  const options = ['<option value="">Choose question count</option>'];
+  for (let count = MCQ_MIN_QUESTION_COUNT; count <= MCQ_MAX_QUESTION_COUNT; count += 1) {
+    options.push(
+      `<option value="${count}" ${selectedCount === count ? 'selected' : ''}>${count}</option>`
+    );
+  }
+  return options.join('');
+}
+
+function createEmptyObjectiveDraftQuestion() {
+  return {
+    text: '',
+    options: ['', '', '', ''],
+    correctIndex: 0
+  };
+}
+
+function normalizeObjectiveDraftQuestion(draft) {
+  const normalized = createEmptyObjectiveDraftQuestion();
+  if (!draft || typeof draft !== 'object') return normalized;
+
+  normalized.text = String(draft.text || '').trim();
+  normalized.options = [0, 1, 2, 3].map((index) =>
+    String(Array.isArray(draft.options) ? draft.options[index] || '' : '').trim()
+  );
+  const parsedAnswer = Number(draft.correctIndex);
+  normalized.correctIndex =
+    Number.isInteger(parsedAnswer) && parsedAnswer >= 0 && parsedAnswer <= 3 ? parsedAnswer : 0;
+  return normalized;
+}
+
+function buildObjectiveDraftQuestions(questionCount, draftQuestions = state.teacherMcqDraftQuestions) {
   const safeCount = Math.max(
     MCQ_MIN_QUESTION_COUNT,
     Math.min(MCQ_MAX_QUESTION_COUNT, Number(questionCount || MCQ_DEFAULT_QUESTION_COUNT))
   );
+  return Array.from({ length: safeCount }, (_, index) =>
+    normalizeObjectiveDraftQuestion(Array.isArray(draftQuestions) ? draftQuestions[index] : null)
+  );
+}
+
+function syncObjectiveDraftFromDom(questionCount = state.teacherMcqQuestionCount) {
+  const safeCount = getValidMcqQuestionCount(questionCount);
+  if (safeCount == null) {
+    state.teacherMcqDraftQuestions = [];
+    return [];
+  }
+
+  const fallbackDraft = buildObjectiveDraftQuestions(safeCount, state.teacherMcqDraftQuestions);
+  const nextDraft = Array.from({ length: safeCount }, (_, index) => {
+    const fallback = normalizeObjectiveDraftQuestion(fallbackDraft[index]);
+    return {
+      text: sanitizeValue(document.getElementById(`objective-q-${index}`)?.value || fallback.text),
+      options: [0, 1, 2, 3].map((optionIndex) =>
+        sanitizeValue(
+          document.getElementById(`objective-q-${index}-opt-${optionIndex}`)?.value ||
+            fallback.options[optionIndex]
+        )
+      ),
+      correctIndex: Number(
+        document.getElementById(`objective-q-${index}-answer`)?.value ?? fallback.correctIndex
+      )
+    };
+  }).map(normalizeObjectiveDraftQuestion);
+
+  state.teacherMcqDraftQuestions = nextDraft;
+  return nextDraft;
+}
+
+function objectiveQuestionBuilderMarkup(questionCount, draftQuestions = state.teacherMcqDraftQuestions) {
+  const safeDraft = buildObjectiveDraftQuestions(questionCount, draftQuestions);
+  const safeCount = safeDraft.length;
   const cards = Array.from({ length: safeCount }, (_, index) => {
     const serial = index + 1;
+    const draft = safeDraft[index];
     return `
       <article class="question-builder-card">
         <h4>Question ${serial}</h4>
-        <input id="objective-q-${index}" type="text" placeholder="Enter question ${serial}" />
+        <input
+          id="objective-q-${index}"
+          type="text"
+          placeholder="Enter question ${serial}"
+          value="${escapeHtml(draft.text)}"
+        />
         <div class="builder-options">
-          <input id="objective-q-${index}-opt-0" type="text" placeholder="Option A" />
-          <input id="objective-q-${index}-opt-1" type="text" placeholder="Option B" />
-          <input id="objective-q-${index}-opt-2" type="text" placeholder="Option C" />
-          <input id="objective-q-${index}-opt-3" type="text" placeholder="Option D" />
+          <input id="objective-q-${index}-opt-0" type="text" placeholder="Option A" value="${escapeHtml(draft.options[0])}" />
+          <input id="objective-q-${index}-opt-1" type="text" placeholder="Option B" value="${escapeHtml(draft.options[1])}" />
+          <input id="objective-q-${index}-opt-2" type="text" placeholder="Option C" value="${escapeHtml(draft.options[2])}" />
+          <input id="objective-q-${index}-opt-3" type="text" placeholder="Option D" value="${escapeHtml(draft.options[3])}" />
         </div>
         <select id="objective-q-${index}-answer">
-          <option value="0">Correct Option: A</option>
-          <option value="1">Correct Option: B</option>
-          <option value="2">Correct Option: C</option>
-          <option value="3">Correct Option: D</option>
+          <option value="0" ${draft.correctIndex === 0 ? 'selected' : ''}>Correct Option: A</option>
+          <option value="1" ${draft.correctIndex === 1 ? 'selected' : ''}>Correct Option: B</option>
+          <option value="2" ${draft.correctIndex === 2 ? 'selected' : ''}>Correct Option: C</option>
+          <option value="3" ${draft.correctIndex === 3 ? 'selected' : ''}>Correct Option: D</option>
         </select>
       </article>
     `;
@@ -1625,6 +1704,50 @@ function objectiveQuestionBuilderMarkup(questionCount) {
       <div class="objective-builder-grid">${cards}</div>
     </section>
   `;
+}
+
+function objectiveQuestionBuilderShellMarkup() {
+  const validQuestionCount = getValidMcqQuestionCount(state.teacherMcqQuestionCount);
+  if (validQuestionCount == null) {
+    return `
+      <section class="builder-box">
+        <p class="muted">Choose the number of MCQ questions to open the question form.</p>
+      </section>
+    `;
+  }
+
+  return objectiveQuestionBuilderMarkup(validQuestionCount, state.teacherMcqDraftQuestions);
+}
+
+function renderObjectiveQuestionBuilder() {
+  const root = document.getElementById('objectiveQuestionBuilderRoot');
+  if (!root) return;
+  root.innerHTML = objectiveQuestionBuilderShellMarkup();
+}
+
+function bindObjectiveQuestionBuilderDraftSync() {
+  const root = document.getElementById('objectiveQuestionBuilderRoot');
+  if (!root || root.dataset.bound === '1') return;
+  root.dataset.bound = '1';
+  const syncDraft = () => {
+    syncObjectiveDraftFromDom();
+  };
+  root.addEventListener('input', syncDraft);
+  root.addEventListener('change', syncDraft);
+}
+
+function resetTeacherTestComposer() {
+  state.teacherTestTitle = '';
+  state.teacherMcqQuestionCount = '';
+  state.teacherMcqDraftQuestions = [];
+  state.teacherPdfPreview = null;
+  state.teacherPdfPreviewBusy = false;
+  state.teacherTestAudienceMode = 'all';
+  state.teacherTestSelectedStudentIds = [];
+  state.teacherTestScheduleEnabled = false;
+  state.teacherTestScheduleDate = todayIsoDate();
+  state.teacherTestScheduleStartTime = '17:00';
+  state.teacherTestScheduleEndTime = '19:00';
 }
 
 function collectObjectiveQuestions(questionCount) {
@@ -1961,12 +2084,30 @@ async function extractQuestionsFromPdf(file, options = {}) {
 
     if (!filteredLines.length) return [];
 
+    const hasExplicitQuestionMarkers = filteredLines.some(
+      (line) => markerRegex.test(line) && !optionRegex.test(line)
+    );
     const questionBlocks = [];
     let currentBlock = [];
 
     filteredLines.forEach((line) => {
       const isQuestionStart = markerRegex.test(line);
       const isOptionLine = optionRegex.test(line);
+
+      if (hasExplicitQuestionMarkers) {
+        if (isQuestionStart && !isOptionLine) {
+          if (currentBlock.length) questionBlocks.push(currentBlock);
+          currentBlock = [stripQuestionMarker(line)];
+          return;
+        }
+
+        if (!currentBlock.length) {
+          return;
+        }
+
+        currentBlock.push(line);
+        return;
+      }
 
       if (isQuestionStart && !isOptionLine) {
         if (currentBlock.length) questionBlocks.push(currentBlock);
@@ -4465,7 +4606,7 @@ async function renderTeacherDashboard() {
                   </div>
                   <div>
                     <label for="testTitle">Title</label>
-                    <input id="testTitle" type="text" required />
+                    <input id="testTitle" type="text" value="${escapeHtml(state.teacherTestTitle)}" required />
                   </div>
                   <div>
                     <label for="testType">Test Mode</label>
@@ -4479,15 +4620,9 @@ async function renderTeacherDashboard() {
                       ? `
                         <div>
                           <label for="mcqQuestionCount">Number of Questions (MCQ)</label>
-                          <input
-                            id="mcqQuestionCount"
-                            type="number"
-                            min="${MCQ_MIN_QUESTION_COUNT}"
-                            max="${MCQ_MAX_QUESTION_COUNT}"
-                            value="${escapeHtml(state.teacherMcqQuestionCount || '')}"
-                            placeholder="Choose question count"
-                            required
-                          />
+                          <select id="mcqQuestionCount" required>
+                            ${mcqQuestionCountOptionsMarkup(state.teacherMcqQuestionCount)}
+                          </select>
                         </div>
                         <div>
                           <label for="testDuration">Duration of the Exam (MCQ)</label>
@@ -4651,17 +4786,7 @@ async function renderTeacherDashboard() {
                     : ''
                 }
 
-                ${
-                  state.teacherTestType === 'mcq'
-                    ? getValidMcqQuestionCount(state.teacherMcqQuestionCount)
-                      ? objectiveQuestionBuilderMarkup(state.teacherMcqQuestionCount)
-                      : `
-                        <section class="builder-box">
-                          <p class="muted">Choose the number of MCQ questions to open the question form.</p>
-                        </section>
-                      `
-                    : ''
-                }
+                ${state.teacherTestType === 'mcq' ? `<div id="objectiveQuestionBuilderRoot">${objectiveQuestionBuilderShellMarkup()}</div>` : ''}
 
                 <button id="createTestBtn" class="cta-main">Publish Test</button>
                 <p class="auth-note" id="createTestStatus"></p>
@@ -5212,6 +5337,8 @@ async function renderTeacherDashboard() {
     </div>
   `;
 
+  bindObjectiveQuestionBuilderDraftSync();
+
   document.querySelectorAll('[data-teacher-tab]').forEach((button) => {
     button.addEventListener('click', () => {
       state.teacherTab = button.getAttribute('data-teacher-tab') || 'dashboard';
@@ -5711,6 +5838,7 @@ async function renderTeacherDashboard() {
   const testType = document.getElementById('testType');
   if (testType) {
     testType.addEventListener('change', (event) => {
+      syncObjectiveDraftFromDom();
       state.teacherTestType = event.target.value;
       if (state.teacherTestType !== 'pdf_upload') {
         state.teacherPdfPreview = null;
@@ -5720,19 +5848,28 @@ async function renderTeacherDashboard() {
     });
   }
 
+  const testTitle = document.getElementById('testTitle');
+  if (testTitle) {
+    const syncTitle = (event) => {
+      state.teacherTestTitle = sanitizeValue(event.target.value || '');
+    };
+    testTitle.addEventListener('input', syncTitle);
+    testTitle.addEventListener('change', syncTitle);
+  }
+
   const mcqQuestionCount = document.getElementById('mcqQuestionCount');
   if (mcqQuestionCount) {
     const syncMcqCount = (value) => {
       const normalized = getValidMcqQuestionCount(value);
+      syncObjectiveDraftFromDom();
       state.teacherMcqQuestionCount = normalized == null ? '' : normalized;
-      void renderTeacherDashboard();
+      state.teacherMcqDraftQuestions =
+        normalized == null
+          ? []
+          : buildObjectiveDraftQuestions(normalized, state.teacherMcqDraftQuestions);
+      renderObjectiveQuestionBuilder();
     };
     mcqQuestionCount.addEventListener('change', (event) => {
-      syncMcqCount(event.target.value);
-    });
-    mcqQuestionCount.addEventListener('input', (event) => {
-      const normalized = getValidMcqQuestionCount(event.target.value);
-      if (normalized == null && String(event.target.value || '').trim() !== '') return;
       syncMcqCount(event.target.value);
     });
   }
@@ -5771,6 +5908,7 @@ async function renderTeacherDashboard() {
   const testSubject = document.getElementById('testSubjectId');
   if (testSubject) {
     testSubject.addEventListener('change', (event) => {
+      syncObjectiveDraftFromDom();
       state.teacherTestSubjectId = event.target.value || '';
       void renderTeacherDashboard();
     });
@@ -5779,6 +5917,7 @@ async function renderTeacherDashboard() {
   const testAudienceMode = document.getElementById('testAudienceMode');
   if (testAudienceMode) {
     testAudienceMode.addEventListener('change', (event) => {
+      syncObjectiveDraftFromDom();
       state.teacherTestAudienceMode = event.target.value || 'all';
       if (state.teacherTestAudienceMode === 'all') {
         state.teacherTestSelectedStudentIds = [];
@@ -5790,6 +5929,7 @@ async function renderTeacherDashboard() {
   const testScheduleEnabled = document.getElementById('testScheduleEnabled');
   if (testScheduleEnabled) {
     testScheduleEnabled.addEventListener('change', (event) => {
+      syncObjectiveDraftFromDom();
       state.teacherTestScheduleEnabled = Boolean(event.target.checked);
       void renderTeacherDashboard();
     });
@@ -5829,6 +5969,7 @@ async function renderTeacherDashboard() {
   const selectAllTargetsBtn = document.getElementById('selectAllTargetsBtn');
   if (selectAllTargetsBtn) {
     selectAllTargetsBtn.addEventListener('click', () => {
+      syncObjectiveDraftFromDom();
       state.teacherTestSelectedStudentIds = checkedDataValues(
         '[data-test-target-student]',
         'data-test-target-student'
@@ -5840,6 +5981,7 @@ async function renderTeacherDashboard() {
   const clearTargetsBtn = document.getElementById('clearTargetsBtn');
   if (clearTargetsBtn) {
     clearTargetsBtn.addEventListener('click', () => {
+      syncObjectiveDraftFromDom();
       state.teacherTestSelectedStudentIds = [];
       void renderTeacherDashboard();
     });
@@ -6071,6 +6213,7 @@ async function renderTeacherDashboard() {
             method: 'POST',
             body: JSON.stringify(payload)
           });
+          resetTeacherTestComposer();
           status.textContent = 'Test published.';
           showToast('Test published successfully.', 'success');
           void renderTeacherDashboard();

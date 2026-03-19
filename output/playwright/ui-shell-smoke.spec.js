@@ -130,6 +130,33 @@ test.describe('portal shell smoke', () => {
     expect(nativeDialogSeen).toBeFalsy();
   });
 
+  test('teacher MCQ question count updates without losing typed form state', async ({ page }) => {
+    await login(page, "I'm a Teacher", TEACHER_USERNAME, TEACHER_PASSWORD);
+    await expect(page.getByRole('heading', { name: /Welcome, Demo Teacher/ })).toBeVisible({ timeout: 30000 });
+
+    await page.getByText('Assessment', { exact: true }).click();
+    await page.locator('[data-teacher-tab="assessment_conduct"]:visible').click();
+    await expect(page.getByRole('heading', { name: 'Conduct Test' })).toBeVisible();
+
+    const firstSubjectValue = await page.locator('#testSubjectId option:not([value=""])').first().getAttribute('value');
+    expect(firstSubjectValue).toBeTruthy();
+
+    await page.selectOption('#testSubjectId', firstSubjectValue);
+    await page.fill('#testTitle', 'Playwright MCQ Stability');
+    await page.selectOption('#mcqQuestionCount', '2');
+    await page.fill('#objective-q-0', 'What is MS Word used for?');
+    await page.fill('#objective-q-0-opt-0', 'Word processing');
+    await page.fill('#objective-q-0-opt-1', 'Video editing');
+
+    await page.selectOption('#mcqQuestionCount', '3');
+
+    await expect(page.locator('#testTitle')).toHaveValue('Playwright MCQ Stability');
+    await expect(page.locator('#objective-q-0')).toHaveValue('What is MS Word used for?');
+    await expect(page.locator('#objective-q-0-opt-0')).toHaveValue('Word processing');
+    await expect(page.locator('#objective-q-0-opt-1')).toHaveValue('Video editing');
+    await expect(page.locator('#objective-q-2')).toBeVisible();
+  });
+
   test('teacher published tests search, archive, restore, and loading shell work', async ({ page }) => {
     const titlePrefix = `PW Archive ${Date.now()}`;
 
