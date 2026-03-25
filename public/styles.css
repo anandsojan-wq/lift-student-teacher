@@ -530,16 +530,22 @@ textarea:focus-visible {
   padding: 18px;
   z-index: 190;
   pointer-events: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .test-modal-card {
   width: min(680px, calc(100vw - 28px));
+  max-height: calc(100vh - 36px);
   border-radius: 16px;
   border: 1px solid #c9e1f6;
   background: #ffffff;
   box-shadow: 0 18px 45px rgba(10, 58, 99, 0.24);
   padding: 18px;
   pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .nav-subject-select {
@@ -1503,15 +1509,22 @@ select:focus {
 .resource-pdf-viewer {
   width: 100%;
   min-height: 280px;
+  max-height: min(72vh, 860px);
   margin-top: 8px;
   border: 1px solid #d5e6f5;
   border-radius: 10px;
   background: #fff;
+  overflow: hidden;
 }
 
 .student-pdf-canvas-root {
   padding: 10px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  overflow-anchor: none;
+  scroll-behavior: auto;
   background:
     linear-gradient(180deg, rgba(239, 247, 255, 0.92) 0%, rgba(229, 241, 252, 0.92) 100%),
     radial-gradient(circle at top, rgba(66, 153, 225, 0.08), transparent 42%);
@@ -1704,7 +1717,7 @@ select:focus {
     border-radius: 14px;
     padding: 14px;
     max-height: 86vh;
-    overflow-y: auto;
+    overflow: hidden;
   }
 
   .signout {
@@ -1807,6 +1820,7 @@ select:focus {
 
   .resource-pdf-viewer {
     min-height: 220px;
+    max-height: 60vh;
   }
 
   .video-viewer {

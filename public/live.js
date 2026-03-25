@@ -29,6 +29,12 @@ const runtime = {
   navOutsideClickBound: false
 };
 
+function setDocumentScrollLock(locked) {
+  const value = locked ? 'hidden' : '';
+  document.documentElement.style.overflow = value;
+  document.body.style.overflow = value;
+}
+
 function todayIsoDate() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -6913,6 +6919,7 @@ function bindStudentAnswerKeyViewerEvents() {
   document.querySelectorAll('[data-close-student-answer-key]').forEach((button) => {
     button.addEventListener('click', () => {
       document.querySelectorAll('[data-student-answer-key-root]').forEach((node) => node.remove());
+      setDocumentScrollLock(Boolean(state.studentPdfViewer));
     });
   });
 }
@@ -6923,6 +6930,7 @@ function openStudentAnswerKeyViewer(payload, title = 'Answer Key') {
   wrapper.setAttribute('data-student-answer-key-root', '1');
   wrapper.innerHTML = answerKeyViewerMarkup(payload, title);
   document.body.appendChild(wrapper);
+  setDocumentScrollLock(true);
   bindStudentAnswerKeyViewerEvents();
   if (payload?.viewUrl) {
     void renderProtectedPdfInto(payload.viewUrl, 'studentAnswerKeyCanvasRoot', 'studentAnswerKeyStatus');
@@ -6939,6 +6947,8 @@ async function renderProtectedPdfInto(url, containerId, statusId) {
   if (!container || !status) return;
 
   container.innerHTML = '';
+  container.scrollTop = 0;
+  container.scrollLeft = 0;
   status.textContent = 'Loading PDF...';
 
   if (!window.pdfjsLib?.getDocument) {
@@ -6990,8 +7000,17 @@ async function renderProtectedPdfInto(url, containerId, statusId) {
         viewport
       }).promise;
     }
+
+    container.scrollTop = 0;
+    container.scrollLeft = 0;
+    requestAnimationFrame(() => {
+      container.scrollTop = 0;
+      container.scrollLeft = 0;
+    });
   } catch (error) {
     status.textContent = error.message || 'Unable to render PDF.';
+    container.scrollTop = 0;
+    container.scrollLeft = 0;
   }
 }
 
@@ -8008,7 +8027,10 @@ async function renderStudentDashboard() {
   });
 
   if (state.studentPdfViewer?.url) {
+    setDocumentScrollLock(true);
     void renderStudentProtectedPdfDocument(state.studentPdfViewer.url);
+  } else if (!document.querySelector('[data-student-answer-key-root]')) {
+    setDocumentScrollLock(false);
   }
 
   const studentAddTodoBtn = document.getElementById('studentAddTodoBtn');
