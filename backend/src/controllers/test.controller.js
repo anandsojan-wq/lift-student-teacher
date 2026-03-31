@@ -750,7 +750,7 @@ export async function teacherGradeAttempt(req, res) {
     institutionId: req.auth.institutionId,
     recipientUserIds: [attempt.studentId],
     type: 'assessment',
-    message: `Your ${normalizeLegacyTestType(attempt.type) === 'mcq' ? 'MCQ' : 'PDF Upload'} test "${test?.title || 'Test'}" was graded: ${parsed.data.marks}%`
+    message: `Your ${normalizeLegacyTestType(attempt.type) === 'mcq' ? 'MCQ' : 'PDF Upload'} test "${test?.title || 'Test'}" was graded. Marks awarded: ${parsed.data.marks}.`
   });
 
   await trackAnalyticsEvent({

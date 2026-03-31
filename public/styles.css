@@ -2133,6 +2133,13 @@ select:focus {
   font-size: 0.77rem;
 }
 
+.note-viewer-body {
+  color: #1f4f73;
+  line-height: 1.75;
+  white-space: normal;
+  word-break: break-word;
+}
+
 .assessment-details {
   min-width: 200px;
 }

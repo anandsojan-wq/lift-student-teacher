@@ -11,7 +11,7 @@ const resourceSchema = new mongoose.Schema(
     subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject', required: true },
     resourceType: {
       type: String,
-      enum: ['pdf', 'ebook', 'video', 'link'],
+      enum: ['pdf', 'ebook', 'video', 'link', 'notes'],
       required: true
     },
     resourceContext: {

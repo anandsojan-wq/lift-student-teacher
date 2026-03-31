@@ -25,7 +25,7 @@ function isDataUrl(value) {
 
 const teacherCreateResourceSchema = z.object({
   subjectId: z.string().min(1),
-  resourceType: z.enum(['pdf', 'ebook', 'video', 'link']),
+  resourceType: z.enum(['pdf', 'ebook', 'video', 'link', 'notes']),
   title: z.string().trim().min(1, 'Resource title is required.').max(200),
   value: z.string().trim().min(1, 'Resource file or URL is required.').max(4_500_000),
   source: z.enum(['file', 'text']).default('text'),
@@ -33,6 +33,7 @@ const teacherCreateResourceSchema = z.object({
 }).superRefine((payload, ctx) => {
   const isFile = payload.source === 'file';
   const isDocType = payload.resourceType === 'pdf' || payload.resourceType === 'ebook';
+  const isNotesType = payload.resourceType === 'notes';
 
   if (isFile && !isDataUrl(payload.value) && !isHttpUrl(payload.value)) {
     ctx.addIssue({
@@ -42,7 +43,7 @@ const teacherCreateResourceSchema = z.object({
     });
   }
 
-  if (!isFile && !isHttpUrl(payload.value)) {
+  if (!isFile && !isHttpUrl(payload.value) && !isNotesType) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['value'],
@@ -63,6 +64,14 @@ const teacherCreateResourceSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['source'],
       message: 'Video and link resources must use URL input.'
+    });
+  }
+
+  if (isNotesType && isFile) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['source'],
+      message: 'Notes must be created as text.'
     });
   }
 });
@@ -226,7 +235,7 @@ export async function teacherCreateResource(req, res) {
     institutionId: req.auth.institutionId,
     recipientUserIds: profiles.map((profile) => profile.userId),
     type: 'resource',
-    message: `New ${payload.resourceType.toUpperCase()} resource added for ${subject.name}: ${payload.title}`
+    message: `New ${payload.resourceType === 'notes' ? 'notes' : payload.resourceType.toUpperCase()} resource added for ${subject.name}: ${payload.title}`
   });
 
   await trackAnalyticsEvent({

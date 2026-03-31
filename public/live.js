@@ -101,6 +101,7 @@ const state = {
   studentResourceOffset: 0,
   studentSyllabusSubjectId: '',
   studentPdfViewer: null,
+  noteViewer: null,
   adminDialog: null,
   adminBrandingDraft: null,
   appDialog: null,
@@ -540,6 +541,60 @@ function closeAppDialog(shouldRerender = true) {
   if (shouldRerender) {
     rerenderActiveRoleDashboard();
   }
+}
+
+function openNoteViewer(title, content) {
+  state.noteViewer = {
+    title: title || 'Notes',
+    content: content || ''
+  };
+  setDocumentScrollLock(true);
+  rerenderActiveRoleDashboard();
+}
+
+function closeNoteViewer(shouldRerender = true) {
+  state.noteViewer = null;
+  if (!state.studentPdfViewer) {
+    setDocumentScrollLock(false);
+  }
+  if (shouldRerender) {
+    rerenderActiveRoleDashboard();
+  }
+}
+
+function noteViewerMarkup() {
+  const viewer = state.noteViewer;
+  if (!viewer) return '';
+
+  return `
+    <div class="test-modal-backdrop" data-close-note-viewer></div>
+    <section class="test-modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(viewer.title || 'Notes')}">
+      <div class="test-modal-card">
+        <div class="progress-row">
+          <h3>${escapeHtml(viewer.title || 'Notes')}</h3>
+          <button type="button" class="mini-btn" data-close-note-viewer>Close</button>
+        </div>
+        <p class="muted">View-only notes shared by the teacher.</p>
+        <article class="stack-item">
+          <div class="note-viewer-body">${escapeHtml(viewer.content || '').replace(/\n/g, '<br />')}</div>
+        </article>
+      </div>
+    </section>
+  `;
+}
+
+function bindNoteViewerHandlers() {
+  document.querySelectorAll('[data-close-note-viewer]').forEach((button) => {
+    button.addEventListener('click', () => closeNoteViewer());
+  });
+
+  document.querySelectorAll('[data-open-note]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const title = button.getAttribute('data-note-title') || 'Notes';
+      const content = button.getAttribute('data-note-content') || '';
+      openNoteViewer(title, content);
+    });
+  });
 }
 
 function appDialogMarkup() {
@@ -1572,6 +1627,63 @@ function assessmentStatusBadge(attempt) {
   const label = attempt?.status === 'graded' ? 'Completed' : 'Pending Review';
   const className = attempt?.status === 'graded' ? 'done' : 'pending';
   return `<span class="status-badge ${className}">${escapeHtml(label)}</span>`;
+}
+
+function marksSummaryLabel(item) {
+  if (!item) return 'Pending';
+  const hasAssignedMarks = item.assignedMarks != null && Number.isFinite(Number(item.assignedMarks));
+  if (hasAssignedMarks) return `${Number(item.assignedMarks).toFixed(2)} marks`;
+  if (item.scorePercent != null && Number.isFinite(Number(item.scorePercent))) {
+    return `${Number(item.scorePercent).toFixed(2)}%`;
+  }
+  return 'Pending';
+}
+
+function studentResultBadge(item) {
+  if ((item?.assignedMarks != null && Number.isFinite(Number(item.assignedMarks))) || item?.evaluatedAt) {
+    return '<span class="status-badge done">Result Published</span>';
+  }
+  if (item?.scorePercent != null && Number.isFinite(Number(item.scorePercent))) {
+    return '<span class="status-badge done">Auto Scored</span>';
+  }
+  return '<span class="status-badge pending">Awaiting Result</span>';
+}
+
+function resultNotificationsMarkup(notifications) {
+  const list = (notifications || []).filter((item) => String(item.type || '').toLowerCase() === 'assessment');
+  if (!list.length) return '';
+
+  return `
+    <section class="panel">
+      <div class="progress-row">
+        <div>
+          <h3>Results Ready</h3>
+          <p class="muted">Your teacher has published marks for recent submissions.</p>
+        </div>
+        <button type="button" class="cta-soft" data-mark-all-student-notifications>Clear All</button>
+      </div>
+      <div class="todo-list">
+        ${list
+          .slice(0, 5)
+          .map(
+            (notification) => `
+              <article class="todo-item">
+                <div>
+                  <strong>Assessment Result</strong>
+                  <p class="muted">${escapeHtml(notification.message || 'Your result is ready to review.')}</p>
+                  <small>${escapeHtml(formatDate(notification.createdAt))}</small>
+                </div>
+                <div class="todo-actions">
+                  <button type="button" class="mini-btn" data-student-nav="history">Check Result</button>
+                  <button type="button" class="mini-btn danger" data-mark-student-notification="${escapeHtml(notification._id || notification.id || '')}">Dismiss</button>
+                </div>
+              </article>
+            `
+          )
+          .join('')}
+      </div>
+    </section>
+  `;
 }
 
 function getPublishedTestStatus(test) {
@@ -4418,7 +4530,13 @@ async function renderTeacherDashboard() {
                     <label for="resourceSubjectId">Subject</label>
                     <select id="resourceSubjectId" required>
                       <option value="">Select Subject</option>
-                      ${subjects.map((subject) => `<option value="${subject._id}">${escapeHtml(subject.name)}</option>`).join('')}
+                      ${subjects
+                        .map(
+                          (subject) => `<option value="${subject._id}" ${
+                            state.teacherResourceSubjectId === subject._id ? 'selected' : ''
+                          }>${escapeHtml(subject.name)}</option>`
+                        )
+                        .join('')}
                     </select>
                   </div>
                   <div>
@@ -4428,6 +4546,7 @@ async function renderTeacherDashboard() {
                       <option value="ebook" ${state.teacherResourceCreateType === 'ebook' ? 'selected' : ''}>EBook</option>
                       <option value="video" ${state.teacherResourceCreateType === 'video' ? 'selected' : ''}>Video</option>
                       <option value="link" ${state.teacherResourceCreateType === 'link' ? 'selected' : ''}>Link</option>
+                      <option value="notes" ${state.teacherResourceCreateType === 'notes' ? 'selected' : ''}>Notes</option>
                     </select>
                   </div>
                   <div>
@@ -4435,26 +4554,35 @@ async function renderTeacherDashboard() {
                     <input id="resourceTitle" type="text" required />
                   </div>
                   <div>
-                    ${
-                      state.teacherResourceCreateType === 'pdf' ||
-                      state.teacherResourceCreateType === 'ebook'
-                        ? `
+                    ${(() => {
+                      if (
+                        state.teacherResourceCreateType === 'pdf' ||
+                        state.teacherResourceCreateType === 'ebook'
+                      ) {
+                        return `
                           <label for="resourceFile">Upload File</label>
                           <input id="resourceFile" type="file" accept="${
                             state.teacherResourceCreateType === 'pdf'
                               ? '.pdf,application/pdf'
                               : '.pdf,.epub,.mobi,.azw3,application/pdf'
                           }" required />
-                        `
-                        : `
-                          <label for="resourceValue">Resource URL</label>
-                          <input id="resourceValue" type="url" placeholder="${
-                            state.teacherResourceCreateType === 'video'
-                              ? 'https://www.youtube.com/watch?v=...'
-                              : 'https://...'
-                          }" required />
-                        `
-                    }
+                        `;
+                      }
+                      if (state.teacherResourceCreateType === 'notes') {
+                        return `
+                          <label for="resourceNotes">Write Notes</label>
+                          <textarea id="resourceNotes" rows="8" placeholder="Type the notes you want students to read." required></textarea>
+                        `;
+                      }
+                      return `
+                        <label for="resourceValue">Resource URL</label>
+                        <input id="resourceValue" type="url" placeholder="${
+                          state.teacherResourceCreateType === 'video'
+                            ? 'https://www.youtube.com/watch?v=...'
+                            : 'https://...'
+                        }" required />
+                      `;
+                    })()}
                   </div>
                   <div>
                     <label for="resourceKeywords">Keywords (comma separated)</label>
@@ -4480,6 +4608,7 @@ async function renderTeacherDashboard() {
                       <option value="ebook" ${state.teacherResourceType === 'ebook' ? 'selected' : ''}>EBook</option>
                       <option value="video" ${state.teacherResourceType === 'video' ? 'selected' : ''}>Video</option>
                       <option value="link" ${state.teacherResourceType === 'link' ? 'selected' : ''}>Link</option>
+                      <option value="notes" ${state.teacherResourceType === 'notes' ? 'selected' : ''}>Notes</option>
                     </select>
                   </div>
                   <div>
@@ -4548,7 +4677,7 @@ async function renderTeacherDashboard() {
                                 (resource) => `
                                   <tr>
                                     <td>${escapeHtml(resource.title)}</td>
-                                    <td>${escapeHtml(resource.resourceType.toUpperCase())}</td>
+                                    <td>${escapeHtml(resource.resourceType === 'notes' ? 'NOTES' : resource.resourceType.toUpperCase())}</td>
                                     <td>
                                       ${resourceContextBadge(resource)}
                                       <span class="status-badge ${resource.deletedAt ? 'warn' : 'done'}">${resource.deletedAt ? 'Trashed' : 'Active'}</span>
@@ -5339,6 +5468,7 @@ async function renderTeacherDashboard() {
           `
           : ''
       }
+      ${noteViewerMarkup()}
       ${appDialogMarkup()}
     </div>
   `;
@@ -5354,6 +5484,7 @@ async function renderTeacherDashboard() {
   });
   bindNavDropdowns();
   bindAppDialogHandlers();
+  bindNoteViewerHandlers();
 
   document.querySelectorAll('[data-open-teacher-pdf]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -5688,6 +5819,22 @@ async function renderTeacherDashboard() {
               source: 'file',
               keywords: keywordInput || file.name
             };
+          } else if (resourceType === 'notes') {
+            const value = sanitizeValue(document.getElementById('resourceNotes')?.value || '');
+            if (!value) {
+              status.textContent = 'Please write the notes before uploading.';
+              showToast(status.textContent, 'error');
+              return;
+            }
+
+            payload = {
+              subjectId,
+              resourceType,
+              title,
+              value,
+              source: 'text',
+              keywords: keywordInput || title
+            };
           } else {
             const value = sanitizeValue(document.getElementById('resourceValue')?.value || '');
             if (!value || !isHttpUrl(value)) {
@@ -5727,6 +5874,13 @@ async function renderTeacherDashboard() {
     resourceTypeInput.addEventListener('change', (event) => {
       state.teacherResourceCreateType = event.target.value;
       void renderTeacherDashboard();
+    });
+  }
+
+  const resourceSubjectInput = document.getElementById('resourceSubjectId');
+  if (resourceSubjectInput) {
+    resourceSubjectInput.addEventListener('change', (event) => {
+      state.teacherResourceSubjectId = event.target.value || '';
     });
   }
 
@@ -6653,10 +6807,12 @@ async function renderTeacherDashboard() {
 function renderStudentAttemptResult(test, attempt, backTab) {
   clearAttemptTimer();
 
-  const scoreText =
-    attempt.scorePercent == null
+  const hasManualMarks = attempt.assignedMarks != null && Number.isFinite(Number(attempt.assignedMarks));
+  const scoreText = hasManualMarks
+    ? `${Number(attempt.assignedMarks).toFixed(2)} marks`
+    : attempt.scorePercent == null
       ? 'Submitted'
-      : `${attempt.scorePercent}% (${attempt.correctCount}/${attempt.totalQuestions})`;
+      : `${Number(attempt.scorePercent).toFixed(2)}% (${attempt.correctCount}/${attempt.totalQuestions})`;
 
   app.innerHTML = `
     <div class="dashboard-shell">
@@ -6674,6 +6830,11 @@ function renderStudentAttemptResult(test, attempt, backTab) {
           <p class="subline">${escapeHtml(formatTestType(test.type))} | ${escapeHtml(test.subjectName || '')}</p>
           <p class="headline">${scoreText}</p>
           <p class="muted">Time spent: ${Math.round((attempt.timeSpentSeconds || 0) / 60)} minutes</p>
+          ${
+            attempt.teacherFeedback
+              ? `<article class="stack-item"><p><strong>Teacher Feedback</strong></p><p class="muted">${escapeHtml(attempt.teacherFeedback)}</p></article>`
+              : ''
+          }
 
           ${
             normalizeTestTypeValue(test.type) === 'mcq' || test.hasAnswerKey
@@ -7016,6 +7177,19 @@ async function renderProtectedPdfInto(url, containerId, statusId) {
 
 function studentResourceActionMarkup(resource) {
   if (!resource) return '<span class="muted">No file</span>';
+  if (String(resource.resourceType || '').toLowerCase() === 'notes') {
+    return `
+      <button
+        type="button"
+        class="mini-btn"
+        data-open-note="1"
+        data-note-title="${escapeHtml(resource.title || 'Notes')}"
+        data-note-content="${escapeHtml(resource.value || '')}"
+      >
+        View Note
+      </button>
+    `;
+  }
   if (isStudentPdfResource(resource) && resource.viewUrl) {
     return `
       <button
@@ -7041,6 +7215,19 @@ function isTeacherPdfResource(resource) {
 
 function teacherResourceActionMarkup(resource) {
   if (!resource) return '<span class="muted">No file</span>';
+  if (String(resource.resourceType || '').toLowerCase() === 'notes') {
+    return `
+      <button
+        type="button"
+        class="mini-btn"
+        data-open-note="1"
+        data-note-title="${escapeHtml(resource.title || 'Notes')}"
+        data-note-content="${escapeHtml(resource.value || '')}"
+      >
+        View Note
+      </button>
+    `;
+  }
   if (isTeacherPdfResource(resource) && resource.viewUrl) {
     return `
       <button
@@ -7104,7 +7291,8 @@ function groupResourcesByType(resources) {
     pdf: [],
     ebook: [],
     video: [],
-    link: []
+    link: [],
+    notes: []
   };
 
   resources.forEach((resource) => {
@@ -7187,6 +7375,7 @@ function resourcesGroupedMarkup(resources, summary = {}) {
     ${resourceTypeSectionMarkup(permanentGroups, 'ebook', 'EBooks')}
     ${resourceTypeSectionMarkup(permanentGroups, 'video', 'Videos')}
     ${resourceTypeSectionMarkup(permanentGroups, 'link', 'Links')}
+    ${resourceTypeSectionMarkup(permanentGroups, 'notes', 'Notes')}
     <section class="resource-section">
       <div class="progress-row">
         <div>
@@ -7197,7 +7386,7 @@ function resourcesGroupedMarkup(resources, summary = {}) {
       </div>
       ${
         classMaterials.length
-          ? `${resourceTypeSectionMarkup(classGroups, 'pdf', 'PDFs')}${resourceTypeSectionMarkup(classGroups, 'ebook', 'EBooks')}${resourceTypeSectionMarkup(classGroups, 'video', 'Videos')}${resourceTypeSectionMarkup(classGroups, 'link', 'Links')}`
+          ? `${resourceTypeSectionMarkup(classGroups, 'pdf', 'PDFs')}${resourceTypeSectionMarkup(classGroups, 'ebook', 'EBooks')}${resourceTypeSectionMarkup(classGroups, 'video', 'Videos')}${resourceTypeSectionMarkup(classGroups, 'link', 'Links')}${resourceTypeSectionMarkup(classGroups, 'notes', 'Notes')}`
           : emptyStateMarkup({
               title: 'No class materials right now',
               detail: 'Teachers can attach class-only files from the planner, and they will appear here with a class label.',
@@ -7300,16 +7489,18 @@ async function renderStudentDashboard() {
     state.studentTab === 'today' ||
     state.studentTab === 'pending';
   const shouldLoadTodayClasses = state.studentTab === 'dashboard' || state.studentTab === 'classes';
+  const shouldLoadNotifications = state.studentTab === 'dashboard' || state.studentTab === 'history';
 
-  const [dashboardResult, historyResult, queueResult, todayClassesResult] = await Promise.all([
+  const [dashboardResult, historyResult, queueResult, todayClassesResult, notificationsResult] = await Promise.all([
     shouldLoadDashboard ? api('/student/dashboard') : Promise.resolve({ data: { dashboard: { subjects: [], streakDays: 0, level: 1, xp: 0, badges: [] } } }),
     shouldLoadHistory ? api('/student/tests/history') : Promise.resolve({ data: { history: [] } }),
     shouldLoadQueue ? api('/student/tests/queue') : Promise.resolve({ data: { today: [], pending: [] } }),
-    shouldLoadTodayClasses ? api('/student/classes/today') : Promise.resolve({ data: { classes: [] } })
+    shouldLoadTodayClasses ? api('/student/classes/today') : Promise.resolve({ data: { classes: [] } }),
+    shouldLoadNotifications ? api('/student/notifications') : Promise.resolve({ data: { notifications: [] } })
   ]);
 
   schedulePrefetch(
-    ['/student/dashboard', '/student/tests/queue', '/student/resources', '/student/syllabus', '/student/classes/today', '/student/tests/history'],
+    ['/student/dashboard', '/student/tests/queue', '/student/resources', '/student/syllabus', '/student/classes/today', '/student/tests/history', '/student/notifications'],
     'student-core'
   );
   const dashboard = dashboardResult.data.dashboard;
@@ -7317,6 +7508,7 @@ async function renderStudentDashboard() {
   const todayTests = queueResult.data.today || [];
   const pendingTests = queueResult.data.pending || [];
   const todayClasses = todayClassesResult.data.classes || [];
+  const notifications = notificationsResult.data.notifications || [];
   const studentClasses = splitStudentClassesByStatus(todayClasses);
 
   const subjects = dashboard.subjects || [];
@@ -7385,6 +7577,7 @@ async function renderStudentDashboard() {
         <h2>Good Day, ${escapeHtml(user.fullName)} 👋</h2>
         <p class="subline">${escapeHtml(getInstitutionName())} | Institution ID: ${escapeHtml(institutionId)}</p>
         ${smokeReportMarkup(state.qaReports.student)}
+        ${state.studentTab === 'dashboard' ? resultNotificationsMarkup(notifications) : ''}
 
         ${
           state.studentTab === 'dashboard'
@@ -7621,6 +7814,7 @@ async function renderStudentDashboard() {
                       <option value="ebook" ${state.studentResourceType === 'ebook' ? 'selected' : ''}>EBook</option>
                       <option value="video" ${state.studentResourceType === 'video' ? 'selected' : ''}>Video</option>
                       <option value="link" ${state.studentResourceType === 'link' ? 'selected' : ''}>Link</option>
+                      <option value="notes" ${state.studentResourceType === 'notes' ? 'selected' : ''}>Notes</option>
                     </select>
                   </div>
                   <div>
@@ -7726,6 +7920,7 @@ async function renderStudentDashboard() {
         ${
           state.studentTab === 'history'
             ? `
+              ${resultNotificationsMarkup(notifications)}
               <section class="panel table-panel">
                 <h3>Test History</h3>
                 <div class="table-wrap">
@@ -7735,7 +7930,9 @@ async function renderStudentDashboard() {
                         <th>Date</th>
                         <th>Test</th>
                         <th>Type</th>
-                        <th>Score</th>
+                        <th>Status</th>
+                        <th>Marks</th>
+                        <th>Feedback</th>
                         <th>Action</th>
                       </tr>
                     </thead>
@@ -7749,7 +7946,9 @@ async function renderStudentDashboard() {
                                     <td>${formatDate(item.createdAt)}</td>
                                     <td>${escapeHtml(item.test?.title || '-')}</td>
                                     <td>${escapeHtml(formatTestType(item.type))}</td>
-                                    <td>${item.scorePercent == null ? '-' : `${escapeHtml(item.scorePercent)}%`}</td>
+                                    <td>${studentResultBadge(item)}</td>
+                                    <td>${escapeHtml(marksSummaryLabel(item))}</td>
+                                    <td>${item.teacherFeedback ? escapeHtml(item.teacherFeedback) : '<span class="muted">-</span>'}</td>
                                     <td>
                                       ${
                                         item.answerKeyAvailable
@@ -7763,7 +7962,7 @@ async function renderStudentDashboard() {
                                 `
                               )
                               .join('')
-                          : `<tr><td colspan="5">${emptyStateMarkup({
+                          : `<tr><td colspan="7">${emptyStateMarkup({
                               title: 'No test attempts yet',
                               detail: 'Once you complete a test, your score and answer key access will appear here.',
                               actionLabel: 'Open Today\'s Test',
@@ -7891,6 +8090,7 @@ async function renderStudentDashboard() {
           `
           : ''
       }
+      ${noteViewerMarkup()}
       ${dashboardFooterMarkup()}
     </div>
   `;
@@ -7903,6 +8103,7 @@ async function renderStudentDashboard() {
     });
   });
   bindNavDropdowns();
+  bindNoteViewerHandlers();
 
   document.querySelectorAll('[data-student-nav]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -8110,6 +8311,42 @@ async function renderStudentDashboard() {
           const result = await api(`/student/tests/attempts/${attemptId}/answer-key`);
           openStudentAnswerKeyViewer(result.data, `${String(title)} - Answer Key`);
           showToast('Answer key opened.', 'success');
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  });
+
+  document.querySelectorAll('[data-mark-student-notification]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const notificationId = button.getAttribute('data-mark-student-notification');
+      if (!notificationId) return;
+      await withButtonLoading(button, 'Removing...', async () => {
+        try {
+          await api('/student/notifications/read', {
+            method: 'POST',
+            body: JSON.stringify({ notificationId })
+          });
+          showToast('Result notification removed.', 'success');
+          void renderStudentDashboard();
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
+    });
+  });
+
+  document.querySelectorAll('[data-mark-all-student-notifications]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      await withButtonLoading(button, 'Clearing...', async () => {
+        try {
+          await api('/student/notifications/read', {
+            method: 'POST',
+            body: JSON.stringify({})
+          });
+          showToast('Result notifications cleared.', 'success');
+          void renderStudentDashboard();
         } catch (error) {
           showToast(error.message, 'error');
         }
