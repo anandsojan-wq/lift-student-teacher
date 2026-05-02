@@ -9,6 +9,8 @@ const MCQ_DEFAULT_QUESTION_COUNT = 20;
 const MCQ_MIN_QUESTION_COUNT = 1;
 const MCQ_MAX_QUESTION_COUNT = 100;
 const MCQ_DEFAULT_DURATION_MINUTES = 5;
+const TEACHER_TEST_MAX_DURATION_MINUTES = 300;
+const PDF_EXTRACTION_MAX_QUESTION_COUNT = 250;
 const NAV_TRANSITION_MS = 220;
 const DEFAULT_PAGE_SIZE = 10;
 const DEFAULT_RESOURCE_PAGE_SIZE = 12;
@@ -1725,6 +1727,12 @@ function mcqQuestionCountOptionsMarkup(selectedValue) {
   return options.join('');
 }
 
+function formatDurationMinutesLabel(value) {
+  const parsed = Math.max(1, Math.floor(Number(value || 0)));
+  if (!Number.isFinite(parsed) || parsed <= 0) return 'Choose duration in minutes';
+  return `${parsed} minute${parsed === 1 ? '' : 's'}`;
+}
+
 function createEmptyObjectiveDraftQuestion() {
   return {
     text: '',
@@ -2258,7 +2266,7 @@ async function extractQuestionsFromPdf(file, options = {}) {
         }));
     }
 
-    normalized = normalized.slice(0, 40);
+    normalized = normalized.slice(0, PDF_EXTRACTION_MAX_QUESTION_COUNT);
     return normalized.map((question, index) => ({
       text: String(question?.text || '').trim() || `Question ${index + 1}`,
       ...(Array.isArray(question?.options) && question.options.length >= 2
@@ -4761,15 +4769,16 @@ async function renderTeacherDashboard() {
                         </div>
                         <div>
                           <label for="testDuration">Duration of the Exam (MCQ)</label>
-                          <select id="testDuration">
-                            <option value="5" ${Number(state.teacherMcqDurationMinutes) === 5 ? 'selected' : ''}>5</option>
-                            <option value="10" ${Number(state.teacherMcqDurationMinutes) === 10 ? 'selected' : ''}>10</option>
-                            <option value="15" ${Number(state.teacherMcqDurationMinutes) === 15 ? 'selected' : ''}>15</option>
-                            <option value="20" ${Number(state.teacherMcqDurationMinutes) === 20 ? 'selected' : ''}>20</option>
-                            <option value="30" ${Number(state.teacherMcqDurationMinutes) === 30 ? 'selected' : ''}>30</option>
-                            <option value="45" ${Number(state.teacherMcqDurationMinutes) === 45 ? 'selected' : ''}>45</option>
-                            <option value="60" ${Number(state.teacherMcqDurationMinutes) === 60 ? 'selected' : ''}>60</option>
-                          </select>
+                          <input
+                            id="testDuration"
+                            type="number"
+                            min="1"
+                            max="${TEACHER_TEST_MAX_DURATION_MINUTES}"
+                            step="1"
+                            value="${escapeHtml(state.teacherMcqDurationMinutes)}"
+                            inputmode="numeric"
+                          />
+                          <p id="testDurationHint" class="muted">Selected duration: ${escapeHtml(formatDurationMinutesLabel(state.teacherMcqDurationMinutes))}</p>
                         </div>
                         <div>
                           <label for="mcqCorrectMark">Marks for Right Answer</label>
@@ -4799,12 +4808,16 @@ async function renderTeacherDashboard() {
                       : `
                         <div>
                           <label for="testDuration">Duration of the Exam (PDF Upload)</label>
-                          <select id="testDuration">
-                            <option value="30" ${Number(state.teacherPdfDurationMinutes) === 30 ? 'selected' : ''}>30</option>
-                            <option value="60" ${Number(state.teacherPdfDurationMinutes) === 60 ? 'selected' : ''}>60</option>
-                            <option value="90" ${Number(state.teacherPdfDurationMinutes) === 90 ? 'selected' : ''}>90</option>
-                            <option value="120" ${Number(state.teacherPdfDurationMinutes) === 120 ? 'selected' : ''}>120</option>
-                          </select>
+                          <input
+                            id="testDuration"
+                            type="number"
+                            min="1"
+                            max="${TEACHER_TEST_MAX_DURATION_MINUTES}"
+                            step="1"
+                            value="${escapeHtml(state.teacherPdfDurationMinutes)}"
+                            inputmode="numeric"
+                          />
+                          <p id="testDurationHint" class="muted">Selected duration: ${escapeHtml(formatDurationMinutesLabel(state.teacherPdfDurationMinutes))}</p>
                         </div>
                       `
                   }
@@ -5354,7 +5367,16 @@ async function renderTeacherDashboard() {
                     </div>
                     <div>
                       <label for="reconductDuration">Duration of the Exam</label>
-                      <input id="reconductDuration" type="number" min="1" max="180" value="${escapeHtml(state.teacherReconductDraft.durationMinutes)}" />
+                      <input
+                        id="reconductDuration"
+                        type="number"
+                        min="1"
+                        max="${TEACHER_TEST_MAX_DURATION_MINUTES}"
+                        step="1"
+                        value="${escapeHtml(state.teacherReconductDraft.durationMinutes)}"
+                        inputmode="numeric"
+                      />
+                      <p id="reconductDurationHint" class="muted">Selected duration: ${escapeHtml(formatDurationMinutesLabel(state.teacherReconductDraft.durationMinutes))}</p>
                     </div>
                     <div>
                       <label for="reconductCorrectMark">Marks for Right Answer</label>
@@ -6043,7 +6065,7 @@ async function renderTeacherDashboard() {
 
   const testDuration = document.getElementById('testDuration');
   if (testDuration) {
-    testDuration.addEventListener('change', (event) => {
+    const syncDurationValue = (event) => {
       const parsedValue = Number(event.target.value || 0);
       if (!Number.isFinite(parsedValue) || parsedValue <= 0) return;
       if (state.teacherTestType === 'mcq') {
@@ -6051,7 +6073,13 @@ async function renderTeacherDashboard() {
       } else {
         state.teacherPdfDurationMinutes = parsedValue;
       }
-    });
+      const hint = document.getElementById('testDurationHint');
+      if (hint) {
+        hint.textContent = `Selected duration: ${formatDurationMinutesLabel(parsedValue)}`;
+      }
+    };
+    testDuration.addEventListener('input', syncDurationValue);
+    testDuration.addEventListener('change', syncDurationValue);
   }
 
   const mcqCorrectMarkInput = document.getElementById('mcqCorrectMark');
@@ -6230,8 +6258,12 @@ async function renderTeacherDashboard() {
             return;
           }
 
-          if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
-            status.textContent = 'Please choose a valid duration.';
+          if (
+            !Number.isFinite(durationMinutes) ||
+            durationMinutes <= 0 ||
+            durationMinutes > TEACHER_TEST_MAX_DURATION_MINUTES
+          ) {
+            status.textContent = `Please choose a valid duration between 1 and ${TEACHER_TEST_MAX_DURATION_MINUTES} minutes.`;
             showToast(status.textContent, 'error');
             return;
           }
@@ -6583,8 +6615,14 @@ async function renderTeacherDashboard() {
           const mcqWrongMark = Number(document.getElementById('reconductWrongMark')?.value || 0);
 
           if (title.length < 2) throw new Error('Test title must be at least 2 characters.');
-          if (!Number.isFinite(durationMinutes) || durationMinutes < 1 || durationMinutes > 180) {
-            throw new Error('Duration must be between 1 and 180 minutes.');
+          if (
+            !Number.isFinite(durationMinutes) ||
+            durationMinutes < 1 ||
+            durationMinutes > TEACHER_TEST_MAX_DURATION_MINUTES
+          ) {
+            throw new Error(
+              `Duration must be between 1 and ${TEACHER_TEST_MAX_DURATION_MINUTES} minutes.`
+            );
           }
           if (!Number.isFinite(mcqCorrectMark) || mcqCorrectMark <= 0) {
             throw new Error('Right-answer mark must be greater than 0.');
@@ -6640,6 +6678,20 @@ async function renderTeacherDashboard() {
         }
       });
     });
+  }
+
+  const reconductDurationInput = document.getElementById('reconductDuration');
+  if (reconductDurationInput) {
+    const syncReconductDurationValue = (event) => {
+      const parsedValue = Number(event.target.value || 0);
+      if (!Number.isFinite(parsedValue) || parsedValue <= 0) return;
+      const hint = document.getElementById('reconductDurationHint');
+      if (hint) {
+        hint.textContent = `Selected duration: ${formatDurationMinutesLabel(parsedValue)}`;
+      }
+    };
+    reconductDurationInput.addEventListener('input', syncReconductDurationValue);
+    reconductDurationInput.addEventListener('change', syncReconductDurationValue);
   }
 
   document.querySelectorAll('[data-download-viewed-questions]').forEach((button) => {

@@ -23,23 +23,43 @@ function escapePdfText(value) {
 function createPdfWithLines(filePath, lines) {
   const startY = 780;
   const lineHeight = 20;
-  const content = ['/F1 12 Tf']
-    .concat(
-      lines.map((line, index) => {
-        const y = startY - index * lineHeight;
-        return `1 0 0 1 40 ${y} Tm (${escapePdfText(line)}) Tj`;
-      })
-    )
-    .join('\n');
+  const maxLinesPerPage = 34;
+  const pages = [];
+
+  for (let startIndex = 0; startIndex < lines.length; startIndex += maxLinesPerPage) {
+    pages.push(lines.slice(startIndex, startIndex + maxLinesPerPage));
+  }
 
   const objects = [];
   objects.push('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj');
-  objects.push('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj');
+
+  const pageObjectNumbers = pages.map((_, index) => 3 + index * 2);
+  const contentObjectNumbers = pages.map((_, index) => 4 + index * 2);
+  const fontObjectNumber = 3 + pages.length * 2;
+
   objects.push(
-    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj'
+    `2 0 obj\n<< /Type /Pages /Kids [${pageObjectNumbers.map((number) => `${number} 0 R`).join(' ')}] /Count ${pages.length} >>\nendobj`
   );
-  objects.push(`4 0 obj\n<< /Length ${Buffer.byteLength(content, 'utf8')} >>\nstream\n${content}\nendstream\nendobj`);
-  objects.push('5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj');
+
+  pages.forEach((pageLines, pageIndex) => {
+    const content = ['/F1 12 Tf']
+      .concat(
+        pageLines.map((line, lineIndex) => {
+          const y = startY - lineIndex * lineHeight;
+          return `1 0 0 1 40 ${y} Tm (${escapePdfText(line)}) Tj`;
+        })
+      )
+      .join('\n');
+
+    objects.push(
+      `${pageObjectNumbers[pageIndex]} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${contentObjectNumbers[pageIndex]} 0 R /Resources << /Font << /F1 ${fontObjectNumber} 0 R >> >> >>\nendobj`
+    );
+    objects.push(
+      `${contentObjectNumbers[pageIndex]} 0 obj\n<< /Length ${Buffer.byteLength(content, 'utf8')} >>\nstream\n${content}\nendstream\nendobj`
+    );
+  });
+
+  objects.push(`${fontObjectNumber} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj`);
 
   let pdf = '%PDF-1.4\n';
   const offsets = [0];
@@ -106,6 +126,41 @@ test('teacher PDF preview ignores cover title and starts from real numbered ques
     await expect(page.locator('.preview-question-card').first()).not.toContainText(
       'Use the best option for each question below'
     );
+  } finally {
+    fs.rmSync(tempPdfPath, { force: true });
+  }
+});
+
+test('teacher PDF preview keeps all detected questions for larger papers', async ({ page }) => {
+  const tempPdfPath = path.join(os.tmpdir(), `lift-pdf-question-count-${Date.now()}.pdf`);
+  const lines = ['MS Office Grand Test', 'Answer every question'];
+  for (let index = 1; index <= 50; index += 1) {
+    lines.push(`${index}. Practice question number ${index}?`);
+  }
+  createPdfWithLines(tempPdfPath, lines);
+
+  try {
+    await login(page, "I'm a Teacher", TEACHER_USERNAME, TEACHER_PASSWORD);
+    await expect(page.getByText('Welcome, Demo Teacher')).toBeVisible({ timeout: 30000 });
+
+    await page.getByText('Assessment').first().click();
+    await page.locator('[data-teacher-tab="assessment_conduct"]:visible').click();
+    await expect(page.locator('#createTestForm')).toBeVisible();
+
+    const firstSubjectValue = await page.locator('#testSubjectId option:not([value=""])').first().getAttribute('value');
+    expect(firstSubjectValue).toBeTruthy();
+
+    await page.selectOption('#testSubjectId', firstSubjectValue);
+    await page.selectOption('#testType', 'pdf_upload');
+    await page.fill('#testTitle', `PDF Full Count ${Date.now()}`);
+    await page.setInputFiles('#testPdfQuestionsFile', tempPdfPath);
+
+    await expect(page.getByText('Teacher Preview')).toBeVisible();
+    await expect(page.getByText('50 question(s) detected. This is what students will see inside the exam screen.')).toBeVisible({
+      timeout: 30000
+    });
+    await expect(page.locator('.preview-question-card')).toHaveCount(50);
+    await expect(page.locator('.preview-question-card').nth(49)).toContainText('Practice question number 50?');
   } finally {
     fs.rmSync(tempPdfPath, { force: true });
   }

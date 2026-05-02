@@ -143,6 +143,8 @@ test.describe('portal shell smoke', () => {
 
     await page.selectOption('#testSubjectId', firstSubjectValue);
     await page.fill('#testTitle', 'Playwright MCQ Stability');
+    await page.fill('#testDuration', '73');
+    await expect(page.locator('#testDurationHint')).toHaveText('Selected duration: 73 minutes');
     await page.selectOption('#mcqQuestionCount', '2');
     await page.fill('#objective-q-0', 'What is MS Word used for?');
     await page.fill('#objective-q-0-opt-0', 'Word processing');
