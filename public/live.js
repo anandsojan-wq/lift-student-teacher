@@ -5346,103 +5346,110 @@ async function renderTeacherDashboard() {
                 </div>
                 <p class="muted">Update questions/settings and publish this as a new test for selected students.</p>
 
-                <div class="two-grid-form">
-                  <div>
-                    <label for="reconductTitle">Test Title</label>
-                    <input id="reconductTitle" type="text" value="${escapeHtml(state.teacherReconductDraft.title)}" />
+                <div class="reconduct-scroll">
+                  <div class="two-grid-form">
+                    <div>
+                      <label for="reconductTitle">Test Title</label>
+                      <input id="reconductTitle" type="text" value="${escapeHtml(state.teacherReconductDraft.title)}" />
+                    </div>
+                    <div>
+                      <label for="reconductDuration">Duration of the Exam</label>
+                      <input id="reconductDuration" type="number" min="1" max="180" value="${escapeHtml(state.teacherReconductDraft.durationMinutes)}" />
+                    </div>
+                    <div>
+                      <label for="reconductCorrectMark">Marks for Right Answer</label>
+                      <input id="reconductCorrectMark" type="number" min="0.01" max="100" step="0.01" value="${escapeHtml(state.teacherReconductDraft.mcqCorrectMark)}" />
+                    </div>
+                    <div>
+                      <label for="reconductWrongMark">Marks for Wrong Answer</label>
+                      <input id="reconductWrongMark" type="number" min="-100" max="0" step="0.01" value="${escapeHtml(state.teacherReconductDraft.mcqWrongMark)}" />
+                    </div>
+                    <div>
+                      <label for="reconductAudienceMode">Audience</label>
+                      <select id="reconductAudienceMode">
+                        <option value="all" ${state.teacherReconductDraft.audienceMode === 'all' ? 'selected' : ''}>All students in subject</option>
+                        <option value="selected" ${state.teacherReconductDraft.audienceMode === 'selected' ? 'selected' : ''}>Selected students only</option>
+                      </select>
+                    </div>
                   </div>
-                  <div>
-                    <label for="reconductDuration">Duration of the Exam</label>
-                    <input id="reconductDuration" type="number" min="1" max="180" value="${escapeHtml(state.teacherReconductDraft.durationMinutes)}" />
-                  </div>
-                  <div>
-                    <label for="reconductCorrectMark">Marks for Right Answer</label>
-                    <input id="reconductCorrectMark" type="number" min="0.01" max="100" step="0.01" value="${escapeHtml(state.teacherReconductDraft.mcqCorrectMark)}" />
-                  </div>
-                  <div>
-                    <label for="reconductWrongMark">Marks for Wrong Answer</label>
-                    <input id="reconductWrongMark" type="number" min="-100" max="0" step="0.01" value="${escapeHtml(state.teacherReconductDraft.mcqWrongMark)}" />
-                  </div>
-                  <div>
-                    <label for="reconductAudienceMode">Audience</label>
-                    <select id="reconductAudienceMode">
-                      <option value="all" ${state.teacherReconductDraft.audienceMode === 'all' ? 'selected' : ''}>All students in subject</option>
-                      <option value="selected" ${state.teacherReconductDraft.audienceMode === 'selected' ? 'selected' : ''}>Selected students only</option>
-                    </select>
-                  </div>
+
+                  ${
+                    state.teacherReconductDraft.audienceMode === 'selected'
+                      ? `
+                        <div class="test-audience-panel">
+                          <div class="progress-row">
+                            <h4>Select Students</h4>
+                            <div class="button-row">
+                              <button type="button" class="mini-btn" id="reconductSelectAllBtn">All</button>
+                              <button type="button" class="mini-btn" id="reconductClearAllBtn">Clear</button>
+                            </div>
+                          </div>
+                          ${
+                            reconductStudentPool.length
+                              ? `
+                                <div class="target-student-list">
+                                  ${reconductStudentPool
+                                    .map((student) => {
+                                      const studentId = resolveEntityId(student);
+                                      if (!studentId) return '';
+                                      return `
+                                        <label class="target-student-item">
+                                          <input
+                                            type="checkbox"
+                                            data-reconduct-student="${studentId}"
+                                            ${state.teacherReconductDraft.selectedStudentIds.includes(studentId) ? 'checked' : ''}
+                                          />
+                                          <span>${escapeHtml(student.fullName)} <small>@${escapeHtml(student.username)}</small></span>
+                                        </label>
+                                      `;
+                                    })
+                                    .join('')}
+                                </div>
+                              `
+                              : '<p class="muted">No students found in this subject.</p>'
+                          }
+                        </div>
+                      `
+                      : ''
+                  }
+
+                  <section class="builder-box">
+                    <h4>Questions (${escapeHtml((state.teacherReconductDraft.questions || []).length)})</h4>
+                    <div class="objective-builder-grid">
+                      ${(state.teacherReconductDraft.questions || [])
+                        .map(
+                          (question, index) => `
+                            <article class="question-builder-card">
+                              <h4>Question ${index + 1}</h4>
+                              <input id="reconduct-q-${index}" type="text" value="${escapeHtml(question.text || '')}" />
+                              <div class="builder-options">
+                                <input id="reconduct-q-${index}-opt-0" type="text" value="${escapeHtml(question.options?.[0] || '')}" />
+                                <input id="reconduct-q-${index}-opt-1" type="text" value="${escapeHtml(question.options?.[1] || '')}" />
+                                <input id="reconduct-q-${index}-opt-2" type="text" value="${escapeHtml(question.options?.[2] || '')}" />
+                                <input id="reconduct-q-${index}-opt-3" type="text" value="${escapeHtml(question.options?.[3] || '')}" />
+                              </div>
+                              <select id="reconduct-q-${index}-answer">
+                                <option value="0" ${Number(question.correctIndex) === 0 ? 'selected' : ''}>Correct Option: A</option>
+                                <option value="1" ${Number(question.correctIndex) === 1 ? 'selected' : ''}>Correct Option: B</option>
+                                <option value="2" ${Number(question.correctIndex) === 2 ? 'selected' : ''}>Correct Option: C</option>
+                                <option value="3" ${Number(question.correctIndex) === 3 ? 'selected' : ''}>Correct Option: D</option>
+                              </select>
+                            </article>
+                          `
+                        )
+                        .join('')}
+                    </div>
+                  </section>
                 </div>
 
-                ${
-                  state.teacherReconductDraft.audienceMode === 'selected'
-                    ? `
-                      <div class="test-audience-panel">
-                        <div class="progress-row">
-                          <h4>Select Students</h4>
-                          <div class="button-row">
-                            <button type="button" class="mini-btn" id="reconductSelectAllBtn">All</button>
-                            <button type="button" class="mini-btn" id="reconductClearAllBtn">Clear</button>
-                          </div>
-                        </div>
-                        ${
-                          reconductStudentPool.length
-                            ? `
-                              <div class="target-student-list">
-                                ${reconductStudentPool
-                                  .map((student) => {
-                                    const studentId = resolveEntityId(student);
-                                    if (!studentId) return '';
-                                    return `
-                                      <label class="target-student-item">
-                                        <input
-                                          type="checkbox"
-                                          data-reconduct-student="${studentId}"
-                                          ${state.teacherReconductDraft.selectedStudentIds.includes(studentId) ? 'checked' : ''}
-                                        />
-                                        <span>${escapeHtml(student.fullName)} <small>@${escapeHtml(student.username)}</small></span>
-                                      </label>
-                                    `;
-                                  })
-                                  .join('')}
-                              </div>
-                            `
-                            : '<p class="muted">No students found in this subject.</p>'
-                        }
-                      </div>
-                    `
-                    : ''
-                }
-
-                <section class="builder-box">
-                  <h4>Questions (${escapeHtml((state.teacherReconductDraft.questions || []).length)})</h4>
-                  <div class="objective-builder-grid">
-                    ${(state.teacherReconductDraft.questions || [])
-                      .map(
-                        (question, index) => `
-                          <article class="question-builder-card">
-                            <h4>Question ${index + 1}</h4>
-                            <input id="reconduct-q-${index}" type="text" value="${escapeHtml(question.text || '')}" />
-                            <div class="builder-options">
-                              <input id="reconduct-q-${index}-opt-0" type="text" value="${escapeHtml(question.options?.[0] || '')}" />
-                              <input id="reconduct-q-${index}-opt-1" type="text" value="${escapeHtml(question.options?.[1] || '')}" />
-                              <input id="reconduct-q-${index}-opt-2" type="text" value="${escapeHtml(question.options?.[2] || '')}" />
-                              <input id="reconduct-q-${index}-opt-3" type="text" value="${escapeHtml(question.options?.[3] || '')}" />
-                            </div>
-                            <select id="reconduct-q-${index}-answer">
-                              <option value="0" ${Number(question.correctIndex) === 0 ? 'selected' : ''}>Correct Option: A</option>
-                              <option value="1" ${Number(question.correctIndex) === 1 ? 'selected' : ''}>Correct Option: B</option>
-                              <option value="2" ${Number(question.correctIndex) === 2 ? 'selected' : ''}>Correct Option: C</option>
-                              <option value="3" ${Number(question.correctIndex) === 3 ? 'selected' : ''}>Correct Option: D</option>
-                            </select>
-                          </article>
-                        `
-                      )
-                      .join('')}
+                <div class="button-row reconduct-actions">
+                  <div class="muted reconduct-note">
+                    This will save your edits and publish a new MCQ test for the selected students.
                   </div>
-                </section>
-
-                <div class="button-row">
-                  <button class="cta-main" id="publishReconductBtn">Publish Re-conduct Test</button>
-                  <button class="cta-soft" type="button" data-close-reconduct-test>Cancel</button>
+                  <div class="button-row reconduct-buttons">
+                    <button class="cta-main" id="publishReconductBtn">Save & Publish Updated Test</button>
+                    <button class="cta-soft" type="button" data-close-reconduct-test>Cancel</button>
+                  </div>
                 </div>
                 <p class="auth-note" id="reconductStatus"></p>
               </div>
